@@ -11,6 +11,7 @@ import numpy as np
 from ..measurements.jgh import jgh_curve_metrics, split_forward_reverse
 from ..model import Channel, Run
 from ..protocol import DEFAULT, Protocol
+from ._clean import positive_despiked
 
 _BG_COLOR = {-4: "#2ca02c", 0: "#1f77b4", 4: "#d62728"}
 
@@ -25,12 +26,14 @@ def plot_jgh_device(run: Run, ch: Channel, out_path: str, protocol: Protocol = D
         (vf, if_), (vr, ir) = split_forward_reverse(vj, idv)
         m = jgh_curve_metrics(vj, idv, protocol)
         color = _BG_COLOR.get(vb, "#333333")
-        ax.plot(vf, np.abs(if_), color=color, lw=1.0,
+        fx, fy = positive_despiked(vf, if_)        # only positive Id, no spikes
+        rx, ry = positive_despiked(vr, ir)
+        ax.plot(fx, fy, color=color, lw=1.0,
                 label=f"BG={vb} (dVth={m['Delta_Vth']:.2f}, HI={m['HI']:.3f})")
-        ax.plot(vr, np.abs(ir), color=color, lw=1.0, ls="--")
+        ax.plot(rx, ry, color=color, lw=1.0, ls="--")
     ax.set_yscale("log")
     ax.set_xlabel("Vj (V)")
-    ax.set_ylabel("|Id| (nA)")
+    ax.set_ylabel("Id (nA)")
     ax.set_title(f"{ch.label} — JGH hysteresis (solid=fwd, dashed=rev)")
     ax.legend(fontsize=8, loc="upper left")
     fig.tight_layout()

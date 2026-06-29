@@ -11,6 +11,7 @@ import numpy as np
 from ..measurements.se import _trailing_level, is_main_sensing
 from ..model import Channel, Run
 from ..protocol import DEFAULT, Protocol
+from ._clean import despiked_linear
 
 _PART_STYLE = {0: ("#7f7f7f", "P0 baseline"), 1: ("#9467bd", "P1 exposure"),
                2: ("#d62728", "P2 settle (raw)"), 3: ("#1f77b4", "P3 recovery (raw)")}
@@ -29,14 +30,16 @@ def plot_se_device(run: Run, ch: Channel, out_path: str, protocol: Protocol = DE
 
     for k, g in parts.items():
         color, label = _PART_STYLE.get(k, ("#333333", f"P{k}"))
-        ax.plot(g["Time"], g[col], color=color, lw=0.8, label=label)
+        gx, gy = despiked_linear(g["Time"].to_numpy(float), g[col].to_numpy(float))
+        ax.plot(gx, gy, color=color, lw=0.8, label=label)
 
     if is_main_sensing(run, protocol):
         lvl = lambda k: _trailing_level(parts[k], col, p.window_s, p.outlier_mad_k)
         baseline, response, settle = lvl(p.baseline_part), lvl(p.response_part), lvl(p.settle_part)
         shift = response - settle
         for k in (p.settle_part, p.recovery_part):
-            ax.plot(parts[k]["Time"], parts[k][col] + shift, color="#2ca02c", lw=1.3,
+            gx, gy = despiked_linear(parts[k]["Time"].to_numpy(float), parts[k][col].to_numpy(float) + shift)
+            ax.plot(gx, gy, color="#2ca02c", lw=1.3,
                     label=(f"corrected (shift {shift:+.0f})" if k == p.settle_part else None))
         ax.axhline(response, ls="--", color="black", lw=1.0, label=f"response = {response:.0f}")
         ax.axhline(baseline, ls=":", color="gray", lw=1.0, label=f"baseline = {baseline:.0f}")
