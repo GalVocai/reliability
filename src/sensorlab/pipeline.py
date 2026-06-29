@@ -20,10 +20,12 @@ from .measurements import (
 from .model import MajorKind, Run
 from .protocol import DEFAULT
 from .plotting import (
+    load_style,
     plot_jg_device,
     plot_jg_h2_device,
     plot_jgh_device,
     plot_se_device,
+    plot_se_esn,
     plot_steps_device,
     plot_zozo_device,
 )
@@ -102,6 +104,7 @@ def analyze_folder(
     runs = load_folder(folder)
     grouped = group_by_kind(runs)
     conditions = conditions or load_condition_cache()
+    style = load_style()
     out_dir = out_dir or os.path.join(folder, "analysis")
     os.makedirs(out_dir, exist_ok=True)
     emit(f"Loaded {len(runs)} majors: " + ", ".join(f"n{r.major:02d}={r.kind.value}" for r in runs))
@@ -122,9 +125,19 @@ def analyze_folder(
         finish("SE", {f"SE_n{r.major:02d}": analyze_se_run(r, conditions) for r in se_runs})
         if make_plots:
             for run in se_runs:
-                for ch in run.channels:
-                    plot_se_device(run, ch, os.path.join(_dev_dir(out_dir, conditions, ch, "SE"),
-                                   sanitize_filename(f"{ch.label}.png")), experiment_type=run.kind.value, day=day)
+                if style.se_stack_per_esn:
+                    by_esn: dict[str, list] = {}
+                    for ch in run.channels:
+                        by_esn.setdefault(ch.esn, []).append(ch)
+                    for esn, chs in by_esn.items():
+                        d = _dev_dir(out_dir, conditions, chs[0], "SE")
+                        plot_se_esn(run, chs, os.path.join(d, sanitize_filename(f"ESN{esn}.png")),
+                                    experiment_type=run.kind.value, day=day, style=style)
+                else:
+                    for ch in run.channels:
+                        plot_se_device(run, ch, os.path.join(_dev_dir(out_dir, conditions, ch, "SE"),
+                                       sanitize_filename(f"{ch.label}.png")),
+                                       experiment_type=run.kind.value, day=day, style=style)
 
     # STEPS (n07 ppm staircase)
     steps_runs = grouped.get(MajorKind.STEPS, [])
@@ -135,7 +148,7 @@ def analyze_folder(
             for run in steps_runs:
                 for ch in run.channels:
                     plot_steps_device(run, ch, os.path.join(_dev_dir(out_dir, conditions, ch, "STEPS"),
-                                      sanitize_filename(f"{ch.label}.png")), experiment_type=run.kind.value, day=day)
+                                      sanitize_filename(f"{ch.label}.png")), experiment_type=run.kind.value, day=day, style=style)
 
     # JG transfer sweeps (n03/n05/n06)
     jg_runs = grouped.get(MajorKind.JG, [])
@@ -147,7 +160,7 @@ def analyze_folder(
                 for ch in run.channels:
                     plot_jg_device(run, ch, os.path.join(_dev_dir(out_dir, conditions, ch, "JG"),
                                    sanitize_filename(f"n{run.major:02d}_{ch.label}.png")),
-                                   experiment_type=run.kind.value, day=day)
+                                   experiment_type=run.kind.value, day=day, style=style)
 
     # JG_H2 -> air (n03) vs H2 (n05) vs recovery (n06)
     if jg_runs:
@@ -161,7 +174,7 @@ def analyze_folder(
             if make_plots and air is not None and h2 is not None:
                 for ch in air.channels:
                     plot_jg_h2_device(air, h2, ch, os.path.join(_dev_dir(out_dir, conditions, ch, "JG_H2"),
-                                      sanitize_filename(f"{ch.label}.png")), day=day)
+                                      sanitize_filename(f"{ch.label}.png")), day=day, style=style)
 
     # JGH hysteresis (n02)
     jgh_runs = grouped.get(MajorKind.JGH, [])
@@ -172,7 +185,7 @@ def analyze_folder(
             for run in jgh_runs:
                 for ch in run.channels:
                     plot_jgh_device(run, ch, os.path.join(_dev_dir(out_dir, conditions, ch, "JGH"),
-                                    sanitize_filename(f"{ch.label}.png")), experiment_type=run.kind.value, day=day)
+                                    sanitize_filename(f"{ch.label}.png")), experiment_type=run.kind.value, day=day, style=style)
 
     # ZOZO (n01)
     zozo_runs = grouped.get(MajorKind.ZOZO, [])
