@@ -22,6 +22,7 @@ def run_degradation(
     baseline_day: object | None = None,
     make_plots: bool = True,
     value: str = "value",
+    include_devices: set | None = None,
     log: Callable[[str], None] | None = None,
 ) -> str:
     """Build degradation tables + trend plots under out_dir/degradation/.
@@ -31,9 +32,10 @@ def run_degradation(
             trends/<metric>_devices.png, trends/<metric>_average.png}.
     """
     emit = log or (lambda _m: None)
-    results = build_degradation(timepoints, baseline_day)
+    results = build_degradation(timepoints, baseline_day, include_devices)
     deg_root = os.path.join(out_dir, "degradation")
-    emit(f"Comparing {len(timepoints)} timepoints; {len(results)} (condition, measurement) groups.")
+    inc = "all" if include_devices is None else f"{len(include_devices)} selected"
+    emit(f"Comparing {len(timepoints)} timepoints; {len(results)} groups; devices in average: {inc}.")
 
     for (cond, sheet), (tidy, agg) in results.items():
         d = os.path.join(deg_root, _cond_folder(cond), sheet)
@@ -49,7 +51,8 @@ def run_degradation(
         for metric, tm in tidy.groupby("metric"):
             am = agg[agg["metric"] == metric]
             safe = sanitize_filename(str(metric))
-            plot_metric_devices(tm, os.path.join(tdir, f"{safe}_devices.png"), str(metric), dev_cols)
+            plot_metric_devices(tm, os.path.join(tdir, f"{safe}_devices.png"), str(metric), dev_cols,
+                                include_devices=include_devices)
             plot_metric_average(am, os.path.join(tdir, f"{safe}_average.png"), str(metric), struct, value=value)
         emit(f"  {cond}/{sheet}: {tidy['metric'].nunique()} metrics")
 

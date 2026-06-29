@@ -35,3 +35,11 @@ def test_aggregate_mean_std():
     assert math.isclose(row["deg_mean"], -10.0, abs_tol=1e-9)
     assert math.isclose(row["deg_std"], 0.0, abs_tol=1e-9)
     assert math.isclose(row["value_mean"], -1.35, abs_tol=1e-9)              # (-0.9 + -1.8)/2
+
+
+def test_aggregate_include_devices():
+    tidy = compute_tidy(_long(), ["ESN", "TNumber"], baseline_num=0.0)
+    agg = aggregate_tidy(tidy, ["ESN", "TNumber"], include_devices={("1", "11")})
+    row = agg[(agg["day_num"] == 7.0) & (agg["metric"] == "Vth")].iloc[0]
+    assert row["n"] == 1                                          # only the included device
+    assert math.isclose(row["value_mean"], -0.9, abs_tol=1e-9)   # T11's day-7 value only

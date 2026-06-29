@@ -17,7 +17,7 @@ from tkinter.scrolledtext import ScrolledText
 import pandas as pd
 
 from .compare import run_degradation
-from .degradation import find_masters
+from .degradation import devices_in_folder, find_masters
 from .io.device_map import load_condition_cache
 from .pipeline import all_esns, analyze_folder, load_folder
 
@@ -167,8 +167,9 @@ class DegradationWindow(tk.Toplevel):
     def __init__(self, master: tk.Tk) -> None:
         super().__init__(master)
         self.title("Compare timepoints — degradation")
-        self.geometry("720x560")
+        self.geometry("760x720")
         self.rows: list[dict] = []
+        self.dev_vars: dict[tuple[str, str], tk.BooleanVar] = {}
         self.baseline = tk.IntVar(value=0)
         self.out_dir: str | None = None
         self._queue: queue.Queue[str] = queue.Queue()
@@ -184,6 +185,14 @@ class DegradationWindow(tk.Toplevel):
         ttk.Label(self, text="Timepoints (select the baseline):").pack(anchor="w", **pad)
         self.rows_frame = ttk.Frame(self)
         self.rows_frame.pack(fill="x", **pad)
+
+        devhdr = ttk.Frame(self)
+        devhdr.pack(fill="x", **pad)
+        ttk.Label(devhdr, text="Devices / transistors in the average:").pack(side="left")
+        ttk.Button(devhdr, text="All", width=5, command=lambda: self._set_all(True)).pack(side="left", padx=4)
+        ttk.Button(devhdr, text="None", width=5, command=lambda: self._set_all(False)).pack(side="left")
+        self.dev_frame = ttk.Frame(self)
+        self.dev_frame.pack(fill="x", **pad)
 
         bar = ttk.Frame(self)
         bar.pack(fill="x", **pad)
@@ -213,6 +222,34 @@ class DegradationWindow(tk.Toplevel):
         ttk.Entry(row, textvariable=day_var, width=10).pack(side="left")
         self.rows.append({"folder": folder, "day": day_var})
         self.run_btn.config(state="normal")
+        if not self.dev_vars:                     # populate device grid from the first folder
+            self._populate_devices(folder)
+
+    def _populate_devices(self, folder: str) -> None:
+        for w in self.dev_frame.winfo_children():
+            w.destroy()
+        self.dev_vars.clear()
+        by_esn: dict[str, list[str]] = {}
+        for esn, tnum in devices_in_folder(folder):
+            by_esn.setdefault(esn, []).append(tnum)
+        for r, (esn, tnums) in enumerate(by_esn.items()):
+            ttk.Button(self.dev_frame, text=f"ESN{esn}", width=10,
+                       command=lambda e=esn: self._toggle_card(e)).grid(row=r, column=0, sticky="w")
+            for c, t in enumerate(sorted(tnums)):
+                v = tk.BooleanVar(value=True)
+                self.dev_vars[(esn, t)] = v
+                lbl = f"D{t[0]}T{t[1]}" if len(t) == 2 and t.isdigit() else f"T{t}"
+                ttk.Checkbutton(self.dev_frame, text=lbl, variable=v).grid(row=r, column=c + 1, sticky="w", padx=2)
+
+    def _toggle_card(self, esn: str) -> None:
+        vars_ = [v for (e, _t), v in self.dev_vars.items() if e == esn]
+        new = not all(v.get() for v in vars_)
+        for v in vars_:
+            v.set(new)
+
+    def _set_all(self, state: bool) -> None:
+        for v in self.dev_vars.values():
+            v.set(state)
 
     def _pick_out(self) -> None:
         d = filedialog.askdirectory(title="Select output folder")
@@ -224,13 +261,16 @@ class DegradationWindow(tk.Toplevel):
         timepoints = [(r["day"].get().strip(), r["folder"]) for r in self.rows]
         baseline_day = timepoints[self.baseline.get()][0]
         out = self.out_dir or os.path.dirname(self.rows[0]["folder"])
+        selected = {k for k, v in self.dev_vars.items() if v.get()}
+        include = selected if self.dev_vars else None
         self.run_btn.config(state="disabled")
-        self._log(f"Baseline = '{baseline_day}'  |  output -> {out}")
+        self._log(f"Baseline = '{baseline_day}'  |  devices in average: {len(selected)}/{len(self.dev_vars)}  |  output -> {out}")
 
         def worker() -> None:
             try:
                 root = run_degradation(timepoints, out_dir=out, baseline_day=baseline_day,
-                                       make_plots=self.plots_var.get(), log=self._queue.put)
+                                       make_plots=self.plots_var.get(), include_devices=include,
+                                       log=self._queue.put)
                 self._queue.put("__DONE__:" + root)
             except Exception as exc:
                 self._queue.put("__ERROR__:" + str(exc))

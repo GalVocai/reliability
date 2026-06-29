@@ -82,8 +82,19 @@ def compute_tidy(all_long: pd.DataFrame, id_cols: list[str], baseline_num: float
     return tidy
 
 
-def aggregate_tidy(tidy: pd.DataFrame, id_cols: list[str]) -> pd.DataFrame:
-    """Mean +/- std across devices, per condition (+ sub-device structure) per day."""
+def filter_devices(tidy: pd.DataFrame, include_devices: set | None) -> pd.DataFrame:
+    """Keep only rows whose (ESN, TNumber) is in include_devices (None = all)."""
+    if include_devices is None or "ESN" not in tidy.columns or "TNumber" not in tidy.columns:
+        return tidy
+    keep = {(str(e), str(t)) for e, t in include_devices}
+    mask = [(str(e), str(t)) in keep for e, t in zip(tidy["ESN"], tidy["TNumber"])]
+    return tidy[pd.Series(mask, index=tidy.index)]
+
+
+def aggregate_tidy(tidy: pd.DataFrame, id_cols: list[str],
+                   include_devices: set | None = None) -> pd.DataFrame:
+    """Mean +/- std across (included) devices, per condition (+ sub-device structure) per day."""
+    tidy = filter_devices(tidy, include_devices)
     struct = [c for c in id_cols if c not in ("ESN", "TNumber")]   # keep Vbg/segment/state
     keys = ([c for c in ["condition"] if c in tidy.columns] + struct + ["metric", "day", "day_num"])
     return (tidy.groupby(keys, dropna=False)
@@ -95,9 +106,27 @@ def aggregate_tidy(tidy: pd.DataFrame, id_cols: list[str]) -> pd.DataFrame:
             .sort_values(keys).reset_index(drop=True))
 
 
+def devices_in_folder(folder: str) -> list[tuple[str, str]]:
+    """Sorted unique (ESN, TNumber) present in a timepoint's masters."""
+    found: set[tuple[str, str]] = set()
+    for _cond, _mode, path in find_masters(folder):
+        try:
+            df = pd.read_excel(path)
+        except Exception:
+            continue
+        if "ESN" in df.columns and "TNumber" in df.columns:
+            found |= {(str(e), str(t)) for e, t in zip(df["ESN"], df["TNumber"])}
+    return sorted(found, key=lambda p: (len(p[0]), p[0], p[1]))
+
+
 def build_degradation(timepoints: list[tuple[object, str]],
-                      baseline_day: object | None = None) -> dict[tuple[str, str], tuple[pd.DataFrame, pd.DataFrame]]:
-    """timepoints: list of (day_label, folder). Returns {(condition, sheet): (tidy, agg)}."""
+                      baseline_day: object | None = None,
+                      include_devices: set | None = None) -> dict[tuple[str, str], tuple[pd.DataFrame, pd.DataFrame]]:
+    """timepoints: list of (day_label, folder). Returns {(condition, sheet): (tidy, agg)}.
+
+    `include_devices`: set of (ESN, TNumber) to include in the mean/std aggregate
+    (None = all). The tidy table always keeps every device.
+    """
     per_key: dict[tuple[str, str], list[pd.DataFrame]] = {}
     id_cols_by_key: dict[tuple[str, str], list[str]] = {}
     for day_label, folder in timepoints:
@@ -114,5 +143,5 @@ def build_degradation(timepoints: list[tuple[object, str]],
         bnum = base_num if base_num is not None else float(all_long["day_num"].min())
         tidy = compute_tidy(all_long, idc, bnum)
         results[key] = (tidy.sort_values(idc + ["metric", "day_num"]).reset_index(drop=True),
-                        aggregate_tidy(tidy, idc))
+                        aggregate_tidy(tidy, idc, include_devices))
     return results

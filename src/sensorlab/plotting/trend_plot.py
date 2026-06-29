@@ -22,11 +22,18 @@ def _device_label(keyvals, dev_cols) -> str:
     return " ".join(parts)
 
 
-def plot_metric_devices(tidy_m, out_path: str, metric: str, dev_cols: list[str], title: str = "") -> str:
+def plot_metric_devices(tidy_m, out_path: str, metric: str, dev_cols: list[str],
+                        title: str = "", include_devices: set | None = None) -> str:
     fig, ax = plt.subplots(figsize=(9, 5))
+    keep = {(str(e), str(t)) for e, t in include_devices} if include_devices is not None else None
     for keyvals, g in tidy_m.groupby(dev_cols):
         g = g.sort_values("day_num")
-        ax.plot(g["day_num"], g["value"], marker="o", lw=0.8, alpha=0.55)
+        d = dict(zip(dev_cols, keyvals if isinstance(keyvals, tuple) else (keyvals,)))
+        excluded = keep is not None and (str(d.get("ESN")), str(d.get("TNumber"))) not in keep
+        if excluded:
+            ax.plot(g["day_num"], g["value"], color="#cccccc", lw=0.7, ls=":", alpha=0.7, zorder=1)
+        else:
+            ax.plot(g["day_num"], g["value"], marker="o", lw=0.8, alpha=0.6, zorder=2)
     ax.set_xlabel("Day")
     ax.set_ylabel(metric)
     ax.set_title(title or f"{metric} - per device")
