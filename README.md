@@ -56,5 +56,5 @@ pytest
 - [x] Phase 0 -- skeleton, `protocol.py`, shared utils, test harness, fixtures
 - [ ] Phase 1 -- port SE sensing metrics (time-window anchoring) + golden test
 - [ ] Phase 2 -- JG / IdVt / hysteresis / ET / degradation
-- [ ] Phase 3 -- CLI + thin GUI (one end-to-end command)
+- [x] Phase 3 -- CLI + thin GUI (load folder, Day#, condition cache)
 - [ ] Phase 4 -- package to .exe
