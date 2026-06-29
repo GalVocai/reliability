@@ -10,6 +10,7 @@ from .io import load_condition_cache, read_run, scan_result_files
 from .io.device_map import ConditionCache
 from .io.master_writer import write_master
 from .measurements import (
+    analyze_jg_h2,
     analyze_jg_run,
     analyze_jgh_run,
     analyze_se_run,
@@ -17,8 +18,10 @@ from .measurements import (
     analyze_zozo_run,
 )
 from .model import MajorKind, Run
+from .protocol import DEFAULT
 from .plotting import (
     plot_jg_device,
+    plot_jg_h2_device,
     plot_jgh_device,
     plot_se_device,
     plot_steps_device,
@@ -121,6 +124,25 @@ def analyze_folder(
                     fname = sanitize_filename(f"n{run.major:02d}_{ch.label}.png")
                     plot_jg_device(run, ch, os.path.join(dev_dir, fname),
                                    experiment_type=run.kind.value, day=day)
+
+    # JG_H2 -> sensing via JG sweeps: air (n03) vs H2 (n05) vs recovery (n06)
+    if jg_runs:
+        h2_df = analyze_jg_h2(jg_runs, conditions)
+        if not h2_df.empty:
+            h2_dir = os.path.join(out_dir, "JG_H2")
+            os.makedirs(h2_dir, exist_ok=True)
+            emit("JG_H2: analyzing" + (" + plotting" if make_plots else ""))
+            written["JG_H2"] = write_master(os.path.join(h2_dir, "master_JG_H2.xlsx"), {"JG_H2": h2_df})
+            if make_plots:
+                by_major = {r.major: r for r in jg_runs}
+                air = by_major.get(DEFAULT.jg.h2_air_major)
+                h2 = by_major.get(DEFAULT.jg.h2_exposure_major)
+                if air is not None and h2 is not None:
+                    dev_dir = os.path.join(h2_dir, "by_device")
+                    os.makedirs(dev_dir, exist_ok=True)
+                    for ch in air.channels:
+                        plot_jg_h2_device(air, h2, ch, os.path.join(dev_dir, sanitize_filename(f"{ch.label}.png")),
+                                          day=day)
 
     # JGH hysteresis -> one master (single major n02) + per-device loop plots
     jgh_runs = grouped.get(MajorKind.JGH, [])

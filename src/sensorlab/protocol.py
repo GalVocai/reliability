@@ -83,6 +83,15 @@ class JGProtocol:
     # Flag a device as leaky / degraded when on/off ratio is below this.
     min_on_off: float = 100.0
 
+    # JG_H2 mode: which JG major is which gas condition (fixed protocol, part 2).
+    h2_air_major: int = 3
+    h2_exposure_major: int = 5
+    h2_recovery_major: int = 6
+    h2_part: int = 2                      # only part 2 (last rep) is used
+    # response = (I_H2 - I_air)/I_air is only meaningful where air current is
+    # reliably above the off-noise; restrict the max-response search to this.
+    h2_response_floor_nA: float = 100.0
+
 
 @dataclass(frozen=True)
 class Protocol:
