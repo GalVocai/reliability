@@ -40,19 +40,23 @@ def compare_condition(air, gas, protocol: Protocol = DEFAULT) -> dict[str, float
     i_gas_vth = _interp_at(gv, gi, vth_air)
     resp_at_vth = (i_gas_vth - i_air_vth) / i_air_vth * 100.0 if i_air_vth not in (0.0,) and not np.isnan(i_air_vth) else float("nan")
 
-    # max response over Vj, where air current is reliably above the noise
+    # max response over Vj, where air current is reliably above the noise floor.
+    # The floor is inclusive and never excludes the Vth point, so max_resp is
+    # always >= resp_at_Vth (response only grows toward/below threshold).
     lo, hi = max(av.min(), gv.min()), min(av.max(), gv.max())
     max_resp = vj_max = float("nan")
     if hi > lo:
-        grid = np.linspace(lo, hi, 400)
+        grid = np.linspace(lo, hi, 800)
         i_air = np.interp(grid, av, ai)
         i_gas = np.interp(grid, gv, gi)
-        mask = i_air > p.h2_response_floor_nA
+        mask = i_air >= min(p.h2_response_floor_nA, i_air_vth)   # include the Vth point
         if mask.any():
             resp = (i_gas[mask] - i_air[mask]) / i_air[mask] * 100.0
             j = int(np.argmax(resp))
             max_resp = float(resp[j])
             vj_max = float(grid[mask][j])
+        if not np.isnan(resp_at_vth) and (np.isnan(max_resp) or resp_at_vth > max_resp):
+            max_resp, vj_max = resp_at_vth, vth_air
 
     return {
         "Vth_air": vth_air, "Vth_gas": vth_gas, "delta_Vth": vth_air - vth_gas,
