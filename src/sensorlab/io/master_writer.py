@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pandas as pd
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -13,14 +15,31 @@ _HEADER_FONT = Font(bold=True, color="FFFFFF")
 
 
 def write_master(path: str, sheets: dict[str, pd.DataFrame]) -> str:
-    """Write one workbook; `sheets` maps sheet-name -> per-device table."""
+    """Write one workbook; `sheets` maps sheet-name -> per-device table.
+
+    If `path` is locked (open in Excel), fall back to a timestamped sibling so
+    the run isn't lost, and raise PermissionError-free.
+    """
     used: set[str] = set()
-    with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        for name, df in sheets.items():
-            sheet = unique_sheet_name(name, used)
-            df.to_excel(writer, sheet_name=sheet, index=False)
-            _style(writer.sheets[sheet], df)
-    return path
+    try:
+        target = path
+        with pd.ExcelWriter(target, engine="openpyxl") as writer:
+            for name, df in sheets.items():
+                sheet = unique_sheet_name(name, used)
+                df.to_excel(writer, sheet_name=sheet, index=False)
+                _style(writer.sheets[sheet], df)
+        return target
+    except PermissionError:
+        import time
+        root, ext = os.path.splitext(path)
+        target = f"{root}_{time.strftime('%H%M%S')}{ext}"
+        used.clear()
+        with pd.ExcelWriter(target, engine="openpyxl") as writer:
+            for name, df in sheets.items():
+                sheet = unique_sheet_name(name, used)
+                df.to_excel(writer, sheet_name=sheet, index=False)
+                _style(writer.sheets[sheet], df)
+        return target
 
 
 def _style(ws, df: pd.DataFrame) -> None:

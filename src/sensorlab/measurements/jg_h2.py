@@ -24,6 +24,23 @@ def _interp_at(vj: np.ndarray, idv: np.ndarray, x: float) -> float:
     return float(np.interp(x, vj, idv))
 
 
+def _turnon_onset_vj(av: np.ndarray, ai: np.ndarray, guard: int) -> float:
+    """Vj where the air current sustainably rises out of its own off-noise band.
+
+    The off-noise level is estimated from the low-Vj end of the sweep; the onset
+    is the first Vj past which the current stays above it (so the response search
+    starts at the turn-on, not in the deep-off region where it diverges)."""
+    n = ai.size
+    if n < 5:
+        return float("nan")
+    off = ai[: max(5, n // 4)]                         # low-Vj end = off region
+    noise = float(np.percentile(np.abs(off), 95))      # noise band amplitude
+    for i in range(n):
+        if ai[i] > noise and all(ai[j] > noise for j in range(i, min(i + max(guard, 1), n))):
+            return float(av[i])
+    return float("nan")
+
+
 def compare_condition(air, gas, protocol: Protocol = DEFAULT) -> dict[str, float]:
     """air, gas = (vj, idv) cleaned curves. Returns the comparison metrics."""
     p = protocol.jg
@@ -40,23 +57,26 @@ def compare_condition(air, gas, protocol: Protocol = DEFAULT) -> dict[str, float
     i_gas_vth = _interp_at(gv, gi, vth_air)
     resp_at_vth = (i_gas_vth - i_air_vth) / i_air_vth * 100.0 if i_air_vth not in (0.0,) and not np.isnan(i_air_vth) else float("nan")
 
-    # max response over Vj, where air current is reliably above the noise floor.
-    # The floor is inclusive and never excludes the Vth point, so max_resp is
-    # always >= resp_at_Vth (response only grows toward/below threshold).
-    lo, hi = max(av.min(), gv.min()), min(av.max(), gv.max())
+    # max response over Vj, searched only from the air turn-on onset rightward
+    # (so it never re-enters the deep-off region where the ratio diverges).
+    onset = _turnon_onset_vj(av, ai, p.vth_onset_guard)
+    lo = max(av.min(), gv.min(), onset if not np.isnan(onset) else -np.inf)
+    hi = min(av.max(), gv.max())
     max_resp = vj_max = float("nan")
     if hi > lo:
         grid = np.linspace(lo, hi, 800)
         i_air = np.interp(grid, av, ai)
         i_gas = np.interp(grid, gv, gi)
-        mask = i_air >= min(p.h2_response_floor_nA, i_air_vth)   # include the Vth point
-        if mask.any():
-            resp = (i_gas[mask] - i_air[mask]) / i_air[mask] * 100.0
-            j = int(np.argmax(resp))
-            max_resp = float(resp[j])
-            vj_max = float(grid[mask][j])
-        if not np.isnan(resp_at_vth) and (np.isnan(max_resp) or resp_at_vth > max_resp):
-            max_resp, vj_max = resp_at_vth, vth_air
+        resp = (i_gas - i_air) / i_air * 100.0
+        valid = i_air > 0
+        if valid.any():
+            j = int(np.argmax(resp[valid]))
+            max_resp = float(resp[valid][j])
+            vj_max = float(grid[valid][j])
+    # the Vth point lies inside the onset region; keep it as a candidate so a
+    # sharp peak there is never missed by grid discretization.
+    if not np.isnan(resp_at_vth) and (np.isnan(max_resp) or resp_at_vth > max_resp):
+        max_resp, vj_max = resp_at_vth, vth_air
 
     return {
         "Vth_air": vth_air, "Vth_gas": vth_gas, "delta_Vth": vth_air - vth_gas,

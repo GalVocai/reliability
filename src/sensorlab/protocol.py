@@ -88,9 +88,8 @@ class JGProtocol:
     h2_exposure_major: int = 5
     h2_recovery_major: int = 6
     h2_part: int = 2                      # only part 2 (last rep) is used
-    # response = (I_H2 - I_air)/I_air is only meaningful where air current is
-    # reliably above the off-noise; restrict the max-response search to this.
-    h2_response_floor_nA: float = 100.0
+    # max-response is searched from the air turn-on onset rightward (the onset is
+    # detected per-curve from its own off-noise), so there is no fixed nA floor.
 
 
 @dataclass(frozen=True)
