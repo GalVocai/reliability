@@ -1,4 +1,5 @@
-"""Per-device ppm-staircase plot: continuous Id with ppm-labeled steps."""
+"""Per-device ppm-staircase plot: continuous Id with ppm-labeled steps and a
+blue background band per step whose intensity scales with the concentration."""
 
 from __future__ import annotations
 
@@ -12,15 +13,20 @@ from ..measurements.se import _trailing_level
 from ..model import Channel, Run
 from ..protocol import DEFAULT, Protocol
 from ._clean import despiked_linear
+from ._labels import X_TIME, Y_ID, device_title
 
 
-def plot_steps_device(run: Run, ch: Channel, out_path: str, protocol: Protocol = DEFAULT) -> str:
+def plot_steps_device(run: Run, ch: Channel, out_path: str, protocol: Protocol = DEFAULT,
+                      experiment_type: str = "", day: str = "") -> str:
     col = ch.column
     p = protocol.se
     ppm = p.ppm_steps
     parts = {k: g[["Time", col]].dropna().sort_values("Time") for k, g in run.parts().items()}
     part_ids = sorted(parts)
     baseline = _trailing_level(parts[part_ids[0]], col, p.window_s, p.outlier_mad_k)
+
+    max_ppm = max([c for c in ppm if c > 0], default=1.0)
+    blues = plt.get_cmap("Blues")
 
     fig, ax = plt.subplots(figsize=(11, 5))
     prev_end: float | None = None
@@ -32,19 +38,26 @@ def plot_steps_device(run: Run, ch: Channel, out_path: str, protocol: Protocol =
             continue
         if prev_end is not None:
             tx = tx - (tx[0] - prev_end)
-        ax.plot(tx, ty, color="#1f77b4", lw=1.0)
-        ax.axvline(tx[0], ls=":", color="#bbbbbb", lw=0.8)
-        conc = ppm[i] if i < len(ppm) else None
+        x0, x1 = float(tx[0]), float(tx[-1])
+
+        # blue background band, intensity by concentration (log-scaled)
+        conc = ppm[i] if i < len(ppm) else 0
+        shade = np.log10(conc + 1) / np.log10(max_ppm + 1) if conc > 0 else 0.0
+        ax.axvspan(x0, x1, color=blues(0.08 + 0.82 * shade), zorder=0)
+
+        ax.plot(tx, ty, color="#08306b", lw=1.0, zorder=2)
+        ax.axvline(x0, ls=":", color="#ffffff", lw=0.8, zorder=1)
         lbl = "baseline" if i == 0 else ("recovery" if conc == 0 else f"{int(conc)} ppm")
-        ax.annotate(lbl, xy=(tx[0], 1.0), xycoords=("data", "axes fraction"),
+        ax.annotate(lbl, xy=(x0, 1.0), xycoords=("data", "axes fraction"),
                     xytext=(3, -10 - 12 * (i % 2)), textcoords="offset points",
-                    fontsize=8, color="#555555")
-        prev_end = float(tx[-1])
+                    fontsize=8, color="#333333")
+        prev_end = x1
 
     ax.axhline(baseline, ls=":", color="gray", lw=1.0, label=f"baseline = {baseline:.0f}")
-    ax.set_xlabel("Time (s, gaps removed)")
-    ax.set_ylabel(f"{col} (nA)")
-    ax.set_title(f"{ch.label} — H2 ppm staircase")
+    ax.margins(x=0)
+    ax.set_xlabel(X_TIME)
+    ax.set_ylabel(Y_ID)
+    ax.set_title(device_title(experiment_type, day, ch))
     ax.legend(fontsize=8, loc="best")
     fig.tight_layout()
     fig.savefig(out_path, dpi=110)

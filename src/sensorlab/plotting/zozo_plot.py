@@ -11,11 +11,13 @@ from ..measurements.zozo import build_segments, fit_segment_single
 from ..model import Channel, Run
 from ..protocol import DEFAULT, Protocol
 from ._clean import despiked_linear
+from ._labels import X_TIME, Y_ID, device_title
 
 _STATE_COLOR = {}  # assigned per distinct Vj
 
 
-def plot_zozo_device(run: Run, ch: Channel, out_path: str, protocol: Protocol = DEFAULT) -> str:
+def plot_zozo_device(run: Run, ch: Channel, out_path: str, protocol: Protocol = DEFAULT,
+                     experiment_type: str = "", day: str = "") -> str:
     segs = build_segments(run, ch.column)
     states = sorted({s["Vj"] for s in segs})
     palette = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
@@ -35,9 +37,9 @@ def plot_zozo_device(run: Run, ch: Channel, out_path: str, protocol: Protocol = 
         if f["fit"] is not None:
             ax.plot(seg["time_abs"], f["fit"], color="black", lw=1.2, ls="--")
 
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel(f"{ch.column} (nA)")
-    ax.set_title(f"{ch.label} — ZOZO (states toggled; dashed = single-exp fit)")
+    ax.set_xlabel(X_TIME)
+    ax.set_ylabel(Y_ID)
+    ax.set_title(device_title(experiment_type, day, ch))
     ax.legend(fontsize=8, loc="best")
     fig.tight_layout()
     fig.savefig(out_path, dpi=110)

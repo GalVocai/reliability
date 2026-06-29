@@ -18,11 +18,13 @@ from ..measurements.se import _trailing_level, is_main_sensing
 from ..model import Channel, Run
 from ..protocol import DEFAULT, Protocol
 from ._clean import despiked_linear
+from ._labels import X_TIME, Y_ID, device_title
 
 _PART_LABEL = {0: "P0 baseline", 1: "P1 exposure", 2: "P2 settle", 3: "P3 recovery"}
 
 
-def plot_se_device(run: Run, ch: Channel, out_path: str, protocol: Protocol = DEFAULT) -> str:
+def plot_se_device(run: Run, ch: Channel, out_path: str, protocol: Protocol = DEFAULT,
+                   experiment_type: str = "", day: str = "") -> str:
     p = protocol.se
     col = ch.column
     parts = {k: g[["Time", col]].dropna().sort_values("Time") for k, g in run.parts().items()}
@@ -74,9 +76,9 @@ def plot_se_device(run: Run, ch: Channel, out_path: str, protocol: Protocol = DE
         ax.set_ylim(baseline - 0.3 * span, response + 0.5 * span)
         ax.legend(fontsize=8, loc="best")
 
-    ax.set_xlabel("Time (s, gaps removed)")
-    ax.set_ylabel(f"{col} (nA)")
-    ax.set_title(f"{ch.label} — SE (continuous, P2 corrected)")
+    ax.set_xlabel(X_TIME)
+    ax.set_ylabel(Y_ID)
+    ax.set_title(device_title(experiment_type, day, ch))
     fig.tight_layout()
     fig.savefig(out_path, dpi=110)
     plt.close(fig)

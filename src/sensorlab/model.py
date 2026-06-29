@@ -29,8 +29,16 @@ class Channel:
     tnumber: str         # '32'    (the transistor)
 
     @property
+    def tnum_label(self) -> str:
+        """TNumber in D#T# form: '11'->'D1T1', '31'->'D3T1'."""
+        t = str(self.tnumber)
+        if len(t) == 2 and t.isdigit():
+            return f"D{t[0]}T{t[1]}"
+        return f"T{t}"
+
+    @property
     def label(self) -> str:
-        return f"ESN{self.esn}_T{self.tnumber}"
+        return f"ESN{self.esn}_{self.tnum_label}"
 
 
 @dataclass
