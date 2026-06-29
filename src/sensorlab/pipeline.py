@@ -51,6 +51,38 @@ def all_esns(runs: list[Run]) -> list[str]:
     return list(seen)
 
 
+def _cond_folder(cond: object) -> str:
+    """Folder name for a condition value ('' -> 'unassigned')."""
+    c = (str(cond) if cond is not None else "").strip()
+    return sanitize_filename(c) if c else "unassigned"
+
+
+def _write_master_by_condition(out_dir: str, mode: str, sheets: dict) -> list[str]:
+    """Write one master per condition: rows split by the 'condition' column,
+    into out_dir/<condition>/<mode>/master_<mode>.xlsx."""
+    cond_values: set[str] = set()
+    for d in sheets.values():
+        if "condition" in d.columns:
+            cond_values |= set(d["condition"].fillna("").astype(str))
+    paths: list[str] = []
+    for cv in sorted(cond_values):
+        fsheets = {n: d[d["condition"].fillna("").astype(str) == cv] for n, d in sheets.items()}
+        fsheets = {n: d for n, d in fsheets.items() if not d.empty}
+        if not fsheets:
+            continue
+        cdir = os.path.join(out_dir, _cond_folder(cv), mode)
+        os.makedirs(cdir, exist_ok=True)
+        paths.append(write_master(os.path.join(cdir, f"master_{mode}.xlsx"), fsheets))
+    return paths
+
+
+def _dev_dir(out_dir: str, conditions: ConditionCache, ch, mode: str) -> str:
+    """by_device folder for a channel, under its condition: <cond>/<mode>/by_device."""
+    d = os.path.join(out_dir, _cond_folder(conditions.get(ch.esn)), mode, "by_device")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 def analyze_folder(
     folder: str,
     out_dir: str | None = None,
@@ -59,12 +91,12 @@ def analyze_folder(
     day: str = "",
     log: Callable[[str], None] | None = None,
 ) -> dict[str, str]:
-    """Run the available analyzers and write one master per test type.
+    """Run the analyzers and write outputs split by condition.
 
-    Returns {test_type: master_path}. Conditions are taken from the cache
-    (filled once via the GUI); missing ones are simply left blank for now.
-    Set ``make_plots=False`` for fast master-only runs (per-device figures are
-    the slow part). `log` receives progress messages (used by the GUI).
+    Layout: ``out_dir/<condition>/<MODE>/{master_<MODE>.xlsx, by_device/*.png}``.
+    The condition per device comes from the cache (filled once via the GUI);
+    devices with no condition land under 'unassigned'.
+    Set ``make_plots=False`` for fast master-only runs.
     """
     emit = log or (lambda _m: None)
     runs = load_folder(folder)
@@ -76,105 +108,80 @@ def analyze_folder(
 
     written: dict[str, str] = {}
 
-    # SE sensing -> one master workbook, one sheet per run (n04, n07, ...)
+    def finish(mode: str, sheets: dict) -> None:
+        paths = _write_master_by_condition(out_dir, mode, sheets)
+        if paths:
+            written[mode] = f"{len(paths)} condition(s)"
+
+    # SE sensing (n04)
     se_runs = grouped.get(MajorKind.SE, [])
     if se_runs:
-        se_dir = os.path.join(out_dir, "SE")
-        os.makedirs(se_dir, exist_ok=True)
         emit("SE: analyzing" + (" + plotting" if make_plots else ""))
-        sheets = {f"SE_n{run.major:02d}": analyze_se_run(run, conditions) for run in se_runs}
-        written["SE"] = write_master(os.path.join(se_dir, "master_SE.xlsx"), sheets)
+        finish("SE", {f"SE_n{r.major:02d}": analyze_se_run(r, conditions) for r in se_runs})
         if make_plots:
-            dev_dir = os.path.join(se_dir, "by_device")
-            os.makedirs(dev_dir, exist_ok=True)
             for run in se_runs:
                 for ch in run.channels:
-                    plot_se_device(run, ch, os.path.join(dev_dir, sanitize_filename(f"{ch.label}.png")),
-                                   experiment_type=run.kind.value, day=day)
+                    plot_se_device(run, ch, os.path.join(_dev_dir(out_dir, conditions, ch, "SE"),
+                                   sanitize_filename(f"{ch.label}.png")), experiment_type=run.kind.value, day=day)
 
-    # STEPS (H2 ppm staircase) -> standalone master + plots
+    # STEPS (n07 ppm staircase)
     steps_runs = grouped.get(MajorKind.STEPS, [])
     if steps_runs:
-        steps_dir = os.path.join(out_dir, "STEPS")
-        os.makedirs(steps_dir, exist_ok=True)
         emit("STEPS: analyzing" + (" + plotting" if make_plots else ""))
-        sheets = {f"STEPS_n{run.major:02d}": analyze_steps_run(run, conditions) for run in steps_runs}
-        written["STEPS"] = write_master(os.path.join(steps_dir, "master_STEPS.xlsx"), sheets)
+        finish("STEPS", {f"STEPS_n{r.major:02d}": analyze_steps_run(r, conditions) for r in steps_runs})
         if make_plots:
-            dev_dir = os.path.join(steps_dir, "by_device")
-            os.makedirs(dev_dir, exist_ok=True)
             for run in steps_runs:
                 for ch in run.channels:
-                    plot_steps_device(run, ch, os.path.join(dev_dir, sanitize_filename(f"{ch.label}.png")),
-                                      experiment_type=run.kind.value, day=day)
+                    plot_steps_device(run, ch, os.path.join(_dev_dir(out_dir, conditions, ch, "STEPS"),
+                                      sanitize_filename(f"{ch.label}.png")), experiment_type=run.kind.value, day=day)
 
-    # JG transfer sweeps -> one master, one sheet per major (n03/n05/n06)
+    # JG transfer sweeps (n03/n05/n06)
     jg_runs = grouped.get(MajorKind.JG, [])
     if jg_runs:
-        jg_dir = os.path.join(out_dir, "JG")
-        os.makedirs(jg_dir, exist_ok=True)
         emit("JG: analyzing" + (" + plotting" if make_plots else ""))
-        sheets = {f"JG_n{run.major:02d}": analyze_jg_run(run, conditions) for run in jg_runs}
-        written["JG"] = write_master(os.path.join(jg_dir, "master_JG.xlsx"), sheets)
+        finish("JG", {f"JG_n{r.major:02d}": analyze_jg_run(r, conditions) for r in jg_runs})
         if make_plots:
-            dev_dir = os.path.join(jg_dir, "by_device")
-            os.makedirs(dev_dir, exist_ok=True)
             for run in jg_runs:
                 for ch in run.channels:
-                    fname = sanitize_filename(f"n{run.major:02d}_{ch.label}.png")
-                    plot_jg_device(run, ch, os.path.join(dev_dir, fname),
+                    plot_jg_device(run, ch, os.path.join(_dev_dir(out_dir, conditions, ch, "JG"),
+                                   sanitize_filename(f"n{run.major:02d}_{ch.label}.png")),
                                    experiment_type=run.kind.value, day=day)
 
-    # JG_H2 -> sensing via JG sweeps: air (n03) vs H2 (n05) vs recovery (n06)
+    # JG_H2 -> air (n03) vs H2 (n05) vs recovery (n06)
     if jg_runs:
         h2_df = analyze_jg_h2(jg_runs, conditions)
         if not h2_df.empty:
-            h2_dir = os.path.join(out_dir, "JG_H2")
-            os.makedirs(h2_dir, exist_ok=True)
             emit("JG_H2: analyzing" + (" + plotting" if make_plots else ""))
-            written["JG_H2"] = write_master(os.path.join(h2_dir, "master_JG_H2.xlsx"), {"JG_H2": h2_df})
-            if make_plots:
-                by_major = {r.major: r for r in jg_runs}
-                air = by_major.get(DEFAULT.jg.h2_air_major)
-                h2 = by_major.get(DEFAULT.jg.h2_exposure_major)
-                if air is not None and h2 is not None:
-                    dev_dir = os.path.join(h2_dir, "by_device")
-                    os.makedirs(dev_dir, exist_ok=True)
-                    for ch in air.channels:
-                        plot_jg_h2_device(air, h2, ch, os.path.join(dev_dir, sanitize_filename(f"{ch.label}.png")),
-                                          day=day)
+            finish("JG_H2", {"JG_H2": h2_df})
+            by_major = {r.major: r for r in jg_runs}
+            air = by_major.get(DEFAULT.jg.h2_air_major)
+            h2 = by_major.get(DEFAULT.jg.h2_exposure_major)
+            if make_plots and air is not None and h2 is not None:
+                for ch in air.channels:
+                    plot_jg_h2_device(air, h2, ch, os.path.join(_dev_dir(out_dir, conditions, ch, "JG_H2"),
+                                      sanitize_filename(f"{ch.label}.png")), day=day)
 
-    # JGH hysteresis -> one master (single major n02) + per-device loop plots
+    # JGH hysteresis (n02)
     jgh_runs = grouped.get(MajorKind.JGH, [])
     if jgh_runs:
-        jgh_dir = os.path.join(out_dir, "JGH")
-        os.makedirs(jgh_dir, exist_ok=True)
         emit("JGH: analyzing" + (" + plotting" if make_plots else ""))
-        sheets = {f"JGH_n{run.major:02d}": analyze_jgh_run(run, conditions) for run in jgh_runs}
-        written["JGH"] = write_master(os.path.join(jgh_dir, "master_JGH.xlsx"), sheets)
+        finish("JGH", {f"JGH_n{r.major:02d}": analyze_jgh_run(r, conditions) for r in jgh_runs})
         if make_plots:
-            dev_dir = os.path.join(jgh_dir, "by_device")
-            os.makedirs(dev_dir, exist_ok=True)
             for run in jgh_runs:
                 for ch in run.channels:
-                    plot_jgh_device(run, ch, os.path.join(dev_dir, sanitize_filename(f"{ch.label}.png")),
-                                    experiment_type=run.kind.value, day=day)
+                    plot_jgh_device(run, ch, os.path.join(_dev_dir(out_dir, conditions, ch, "JGH"),
+                                    sanitize_filename(f"{ch.label}.png")), experiment_type=run.kind.value, day=day)
 
-    # ZOZO -> one master + per-device plots
+    # ZOZO (n01)
     zozo_runs = grouped.get(MajorKind.ZOZO, [])
     if zozo_runs:
-        zozo_dir = os.path.join(out_dir, "ZOZO")
-        os.makedirs(zozo_dir, exist_ok=True)
         emit("ZOZO: analyzing" + (" + plotting" if make_plots else ""))
-        sheets = {f"ZOZO_n{run.major:02d}": analyze_zozo_run(run, conditions) for run in zozo_runs}
-        written["ZOZO"] = write_master(os.path.join(zozo_dir, "master_ZOZO.xlsx"), sheets)
+        finish("ZOZO", {f"ZOZO_n{r.major:02d}": analyze_zozo_run(r, conditions) for r in zozo_runs})
         if make_plots:
-            dev_dir = os.path.join(zozo_dir, "by_device")
-            os.makedirs(dev_dir, exist_ok=True)
             for run in zozo_runs:
                 for ch in run.channels:
-                    plot_zozo_device(run, ch, os.path.join(dev_dir, sanitize_filename(f"{ch.label}.png")),
-                                     experiment_type=run.kind.value, day=day)
+                    plot_zozo_device(run, ch, os.path.join(_dev_dir(out_dir, conditions, ch, "ZOZO"),
+                                     sanitize_filename(f"{ch.label}.png")), experiment_type=run.kind.value, day=day)
 
-    emit("Done. Masters: " + ", ".join(written))
+    emit("Done. Modes: " + ", ".join(written))
     return written
