@@ -31,6 +31,7 @@ def plot_jgh_device(run: Run, ch: Channel, out_path: str, protocol: Protocol = D
         ax.plot(fx, fy, color=color, lw=1.0,
                 label=f"BG={vb} (dVth={m['Delta_Vth']:.2f}, HI={m['HI']:.3f})")
         ax.plot(rx, ry, color=color, lw=1.0, ls="--")
+    ax.set_xlim(float(data["Vj"].min()), float(data["Vj"].max()))   # full sweep (start at -2.8)
     ax.set_yscale("log")
     ax.set_xlabel("Vj (V)")
     ax.set_ylabel("Id (nA)")

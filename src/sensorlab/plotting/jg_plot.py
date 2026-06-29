@@ -29,6 +29,7 @@ def plot_jg_device(run: Run, ch: Channel, out_path: str, protocol: Protocol = DE
                 label=f"BG={vb}: Vth={m['Vth']:.2f} SS={m['SS']:.0f} Ion/Ioff={m['Ion_Ioff']:.0f}")
         if not np.isnan(m["Vth"]):
             ax.axvline(m["Vth"], ls="--", color=color, lw=0.8)
+    ax.set_xlim(float(data["Vj"].min()), float(data["Vj"].max()))   # full sweep (start at -2.8)
     ax.set_yscale("log")
     ax.set_xlabel("Vj (V)")
     ax.set_ylabel("Id (nA)")
