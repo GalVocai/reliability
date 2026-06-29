@@ -8,10 +8,10 @@ from collections import defaultdict
 from .io import load_condition_cache, read_run, scan_result_files
 from .io.device_map import ConditionCache
 from .io.master_writer import write_master
-from .measurements import analyze_jg_run, analyze_se_run
+from .measurements import analyze_jg_run, analyze_jgh_run, analyze_se_run
 from .measurements.se import is_main_sensing
 from .model import MajorKind, Run
-from .plotting import plot_jg_device, plot_se_device
+from .plotting import plot_jg_device, plot_jgh_device, plot_se_device
 from .util import sanitize_filename
 
 
@@ -85,5 +85,18 @@ def analyze_folder(
                 fname = sanitize_filename(f"n{run.major:02d}_{ch.label}.png")
                 plot_jg_device(run, ch, os.path.join(dev_dir, fname))
 
-    # ZOZO / JGH analyzers land here next.
+    # JGH hysteresis -> one master (single major n02) + per-device loop plots
+    jgh_runs = grouped.get(MajorKind.JGH, [])
+    if jgh_runs:
+        jgh_dir = os.path.join(out_dir, "JGH")
+        os.makedirs(jgh_dir, exist_ok=True)
+        sheets = {f"JGH_n{run.major:02d}": analyze_jgh_run(run, conditions) for run in jgh_runs}
+        written["JGH"] = write_master(os.path.join(jgh_dir, "master_JGH.xlsx"), sheets)
+        dev_dir = os.path.join(jgh_dir, "by_device")
+        os.makedirs(dev_dir, exist_ok=True)
+        for run in jgh_runs:
+            for ch in run.channels:
+                plot_jgh_device(run, ch, os.path.join(dev_dir, sanitize_filename(f"{ch.label}.png")))
+
+    # ZOZO analyzer lands here next.
     return written
