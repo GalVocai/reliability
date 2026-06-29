@@ -109,6 +109,8 @@ def analyze_folder(
     written: dict[str, str] = {}
 
     def finish(mode: str, sheets: dict) -> None:
+        for d in sheets.values():           # tag every master row with the timepoint
+            d["day"] = day
         paths = _write_master_by_condition(out_dir, mode, sheets)
         if paths:
             written[mode] = f"{len(paths)} condition(s)"
