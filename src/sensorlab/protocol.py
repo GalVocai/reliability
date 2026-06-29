@@ -42,9 +42,14 @@ class SEProtocol:
     # Part->phase roles for the 4-part main sensing run (baseline/exposure/
     # settle/recovery). Named here, ONE place; cross-checked against the gas
     # log at runtime so "the order changed" fails loud instead of silent.
-    baseline_part: int = 0
-    response_part: int = 1
-    recovery_part: int = 3
+    baseline_part: int = 0    # air baseline
+    response_part: int = 1    # H2 exposure (clean, before the JG sweep)
+    settle_part: int = 2      # post-sweep settle (capacitance offset lives here)
+    recovery_part: int = 3    # recovery in air
+
+    # Reject samples > this many MADs from the window median before averaging,
+    # so a single measurement spike can never distort a level.
+    outlier_mad_k: float = 6.0
 
 
 @dataclass(frozen=True)
