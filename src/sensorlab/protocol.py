@@ -68,6 +68,12 @@ class JGProtocol:
     vth_target_nA: float = 10.0
     relevant_rep_is_last: bool = True    # of the 3 JG reps, the last Part is used
 
+    # SS is fit over the log-linear turn-on: Id in (noise_floor, ss_upper_frac*Ion).
+    # (The textbook 1-10 nA band is too narrow for these steep devices.)
+    ss_upper_frac: float = 0.05
+    # Flag a device as leaky / degraded when on/off ratio is below this.
+    min_on_off: float = 100.0
+
 
 @dataclass(frozen=True)
 class Protocol:
