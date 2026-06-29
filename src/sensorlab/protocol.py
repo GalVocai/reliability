@@ -65,10 +65,10 @@ class JGProtocol:
     sweep_close_vj: float = 0.3          # a sweep block closes when Vj returns to 0.3
     sweep_close_tol: float = 1e-6
     noise_floor_nA: float = 1.0
-    # Constant-current Vth target. 50 nA sits above the off-noise (which swings
-    # up to ~60-120 nA) yet still catches the abrupt turn-on (Vth moves <~25 mV
-    # vs 10 nA). Paired with an onset guard so noise spikes can't trigger it.
-    vth_target_nA: float = 50.0
+    # Constant-current Vth target (all modes). 100 nA sits clearly above the
+    # off-noise (which swings up to ~60-120 nA) yet still catches the abrupt
+    # turn-on. Paired with an onset guard so noise spikes can't trigger it.
+    vth_target_nA: float = 100.0
     vth_onset_guard: int = 3             # crossing must stay above target for N points
     relevant_rep_is_last: bool = True    # of the 3 JG reps, the last Part is used
 
