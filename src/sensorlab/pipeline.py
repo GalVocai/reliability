@@ -8,10 +8,10 @@ from collections import defaultdict
 from .io import load_condition_cache, read_run, scan_result_files
 from .io.device_map import ConditionCache
 from .io.master_writer import write_master
-from .measurements import analyze_jg_run, analyze_jgh_run, analyze_se_run
+from .measurements import analyze_jg_run, analyze_jgh_run, analyze_se_run, analyze_zozo_run
 from .measurements.se import is_main_sensing
 from .model import MajorKind, Run
-from .plotting import plot_jg_device, plot_jgh_device, plot_se_device
+from .plotting import plot_jg_device, plot_jgh_device, plot_se_device, plot_zozo_device
 from .util import sanitize_filename
 
 
@@ -104,5 +104,18 @@ def analyze_folder(
                 for ch in run.channels:
                     plot_jgh_device(run, ch, os.path.join(dev_dir, sanitize_filename(f"{ch.label}.png")))
 
-    # ZOZO analyzer lands here next.
+    # ZOZO -> one master + per-device plots
+    zozo_runs = grouped.get(MajorKind.ZOZO, [])
+    if zozo_runs:
+        zozo_dir = os.path.join(out_dir, "ZOZO")
+        os.makedirs(zozo_dir, exist_ok=True)
+        sheets = {f"ZOZO_n{run.major:02d}": analyze_zozo_run(run, conditions) for run in zozo_runs}
+        written["ZOZO"] = write_master(os.path.join(zozo_dir, "master_ZOZO.xlsx"), sheets)
+        if make_plots:
+            dev_dir = os.path.join(zozo_dir, "by_device")
+            os.makedirs(dev_dir, exist_ok=True)
+            for run in zozo_runs:
+                for ch in run.channels:
+                    plot_zozo_device(run, ch, os.path.join(dev_dir, sanitize_filename(f"{ch.label}.png")))
+
     return written
