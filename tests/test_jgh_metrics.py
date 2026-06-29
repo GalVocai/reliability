@@ -17,8 +17,8 @@ def test_jgh_hysteresis():
     idv = np.concatenate([id_f, id_r])
 
     m = jgh_curve_metrics(vj, idv)
-    assert math.isclose(m["Vth_fwd"], -1.0, abs_tol=1e-3)
-    assert math.isclose(m["Vth_rev"], -1.5, abs_tol=1e-3)
-    assert math.isclose(m["dVth"], -0.5, abs_tol=1e-3)
+    assert math.isclose(m["Vth_FWD"], -1.0, abs_tol=1e-3)
+    assert math.isclose(m["Vth_BWD"], -1.5, abs_tol=1e-3)
+    assert math.isclose(m["Delta_Vth"], 0.5, abs_tol=1e-3)   # fwd - rev
     assert m["Ion"] == 50000.0
-    assert m["loop_area"] > 0          # reverse sits above forward
+    assert 0.0 < m["HI"] <= 1.0        # normalized loop area

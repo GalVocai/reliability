@@ -25,7 +25,8 @@ def plot_jgh_device(run: Run, ch: Channel, out_path: str, protocol: Protocol = D
         (vf, if_), (vr, ir) = split_forward_reverse(vj, idv)
         m = jgh_curve_metrics(vj, idv, protocol)
         color = _BG_COLOR.get(vb, "#333333")
-        ax.plot(vf, np.abs(if_), color=color, lw=1.0, label=f"BG={vb} fwd (dVth={m['dVth']:.2f})")
+        ax.plot(vf, np.abs(if_), color=color, lw=1.0,
+                label=f"BG={vb} (dVth={m['Delta_Vth']:.2f}, HI={m['HI']:.3f})")
         ax.plot(vr, np.abs(ir), color=color, lw=1.0, ls="--")
     ax.set_yscale("log")
     ax.set_xlabel("Vj (V)")

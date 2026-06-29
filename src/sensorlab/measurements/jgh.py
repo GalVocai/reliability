@@ -23,35 +23,43 @@ def split_forward_reverse(vj: np.ndarray, idv: np.ndarray):
     return (vj[: imax + 1], idv[: imax + 1]), (vj[imax:], idv[imax:])
 
 
+def _hysteresis_index(vf: np.ndarray, if_: np.ndarray, vr: np.ndarray, ir: np.ndarray) -> float:
+    """Normalized loop area (matches the legacy HI definition):
+    integral|fwd - rev| / integral max(fwd, rev) over the overlapping Vj range."""
+    mask = (vf >= float(vr.min())) & (vf <= float(vr.max()))
+    xg, yf = vf[mask], if_[mask]
+    if xg.size < 2:
+        return float("nan")
+    yb = np.interp(xg, vr, ir)
+    _trapz = getattr(np, "trapezoid", np.trapz)   # numpy>=2 renamed trapz
+    num = float(_trapz(np.abs(yf - yb), xg))
+    den = float(_trapz(np.maximum(yf, yb), xg))
+    return num / den if abs(den) > 1e-30 else float("nan")
+
+
 def jgh_curve_metrics(vj: np.ndarray, idv: np.ndarray, protocol: Protocol = DEFAULT) -> dict[str, float]:
     p = protocol.jg
     (vf, if_), (vr, ir) = split_forward_reverse(vj, idv)
     vf, if_ = _clean_curve(vf, if_)
     vr, ir = _clean_curve(vr, ir)
     if len(vf) < 3 or len(vr) < 3:
-        return {k: float("nan") for k in ("Vth_fwd", "Vth_rev", "dVth", "loop_area", "Ion")}
+        return {k: float("nan") for k in ("Vth_FWD", "Vth_BWD", "Delta_Vth", "HI", "Ion")}
 
     vth_f = _vth_constant_current(vf, if_, p.vth_target_nA)
     vth_r = _vth_constant_current(vr, ir, p.vth_target_nA)
 
-    # loop area on the common Vj range: integral of (reverse - forward) dVj
-    lo, hi = max(vf.min(), vr.min()), min(vf.max(), vr.max())
-    grid = np.linspace(lo, hi, 200)
-    _trapz = getattr(np, "trapezoid", np.trapz)   # numpy>=2 renamed trapz
-    area = float(_trapz(np.interp(grid, vr, ir) - np.interp(grid, vf, if_), grid))
-
     return {
-        "Vth_fwd": vth_f,
-        "Vth_rev": vth_r,
-        "dVth": vth_r - vth_f,                 # hysteresis voltage shift
-        "loop_area": area,                     # nA*V (signed)
+        "Vth_FWD": vth_f,
+        "Vth_BWD": vth_r,
+        "Delta_Vth": vth_f - vth_r,            # hysteresis voltage shift (fwd - rev)
+        "HI": _hysteresis_index(vf, if_, vr, ir),
         "Ion": float(max(if_.max(), ir.max())),
     }
 
 
 def _jgh_flags(m: dict[str, float]) -> str:
     flags: list[str] = []
-    if pd.isna(m["Vth_fwd"]) or pd.isna(m["Vth_rev"]):
+    if pd.isna(m["Vth_FWD"]) or pd.isna(m["Vth_BWD"]):
         flags.append("vth_undefined")
     return ";".join(flags)
 
