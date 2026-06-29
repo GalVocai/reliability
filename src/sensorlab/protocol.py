@@ -51,6 +51,12 @@ class SEProtocol:
     # so a single measurement spike can never distort a level.
     outlier_mad_k: float = 6.0
 
+    # Quality-flag thresholds (surface dubious cases, don't silently report).
+    settle_drift_frac: float = 0.02   # settle still moving > 2% of response span -> not stabilized
+    recovery_pct_min: float = 0.0     # flag recovery outside this range
+    recovery_pct_max: float = 100.0
+    low_baseline_nA: float = 1000.0   # flag very low baseline current (noisy %)
+
 
 @dataclass(frozen=True)
 class JGProtocol:

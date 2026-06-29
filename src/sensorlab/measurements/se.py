@@ -38,6 +38,30 @@ def _trailing_level(part_df: pd.DataFrame, col: str, window_s: float, mad_k: flo
     return float(np.mean(win)) if win.size else float(med)
 
 
+def _window_mean(part_df: pd.DataFrame, col: str, t_lo: float, t_hi: float, mad_k: float) -> float:
+    s = part_df[["Time", col]].dropna()
+    win = s[(s["Time"] >= t_lo) & (s["Time"] < t_hi)][col].to_numpy(dtype=float)
+    if win.size == 0:
+        return float("nan")
+    med = np.median(win)
+    mad = np.median(np.abs(win - med))
+    if mad > 0:
+        win = win[np.abs(win - med) <= mad_k * mad]
+    return float(np.mean(win)) if win.size else float(med)
+
+
+def _settle_drift(part_df: pd.DataFrame, col: str, window_s: float, mad_k: float) -> float:
+    """How much the settle level moved over the last window vs the window before
+    it -- a proxy for 'still rising / not stabilized'."""
+    s = part_df[["Time", col]].dropna()
+    if s.empty:
+        return float("nan")
+    t_end = float(s["Time"].max())
+    last = _window_mean(part_df, col, t_end - window_s, t_end + 1, mad_k)
+    prev = _window_mean(part_df, col, t_end - 2 * window_s, t_end - window_s, mad_k)
+    return last - prev
+
+
 def _safe_pct(num: float, den: float) -> float:
     if den == 0 or pd.isna(den):
         return float("nan")
@@ -58,6 +82,22 @@ def is_main_sensing(run: Run, protocol: Protocol = DEFAULT) -> bool:
     """The 4-part baseline/exposure/settle/recovery run that gets corrected."""
     p = protocol.se
     return set(run.parts()) == {p.baseline_part, p.response_part, p.settle_part, p.recovery_part}
+
+
+def _se_flags(run: Run, col: str, baseline: float, response: float,
+              recovery_pct: float, protocol: Protocol) -> str:
+    """Quality flags for one device (semicolon-separated; '' if clean)."""
+    p = protocol.se
+    flags: list[str] = []
+    span = response - baseline
+    drift = _settle_drift(run.parts()[p.settle_part], col, p.window_s, p.outlier_mad_k)
+    if span and not pd.isna(drift) and abs(drift) > p.settle_drift_frac * abs(span):
+        flags.append("settle_not_stable")
+    if not pd.isna(recovery_pct) and not (p.recovery_pct_min <= recovery_pct <= p.recovery_pct_max):
+        flags.append("recovery_out_of_range")
+    if abs(baseline) < p.low_baseline_nA:
+        flags.append("low_baseline")
+    return ";".join(flags)
 
 
 def analyze_se_run(
@@ -85,6 +125,7 @@ def analyze_se_run(
             settle = lv[p.settle_part]
             recovery = lv[p.recovery_part]
             shift = response - settle                       # correct settle onto response
+            recovery_pct = _safe_pct((settle + shift) - (recovery + shift), (settle + shift) - baseline)
             row.update(
                 baseline=baseline,
                 response=response,
@@ -94,7 +135,8 @@ def analyze_se_run(
                 settle_corr=settle + shift,                 # == response by construction
                 recovery_raw=recovery,
                 recovery_corr=recovery + shift,
-                recovery_pct=_safe_pct((settle + shift) - (recovery + shift), (settle + shift) - baseline),
+                recovery_pct=recovery_pct,
+                flags=_se_flags(run, ch.column, baseline, response, recovery_pct, protocol),
             )
         else:
             # generic SE run (e.g. ppm staircase): per-part levels + response vs baseline
