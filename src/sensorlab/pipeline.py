@@ -40,11 +40,14 @@ def analyze_folder(
     folder: str,
     out_dir: str | None = None,
     conditions: ConditionCache | None = None,
+    make_plots: bool = True,
 ) -> dict[str, str]:
     """Run the available analyzers and write one master per test type.
 
     Returns {test_type: master_path}. Conditions are taken from the cache
     (filled once via the GUI); missing ones are simply left blank for now.
+    Set ``make_plots=False`` for fast master-only runs (per-device figures are
+    the slow part).
     """
     runs = load_folder(folder)
     grouped = group_by_kind(runs)
@@ -62,14 +65,15 @@ def analyze_folder(
         sheets = {f"SE_n{run.major:02d}": analyze_se_run(run, conditions) for run in se_runs}
         written["SE"] = write_master(os.path.join(se_dir, "master_SE.xlsx"), sheets)
         # per-device verification plots for the corrected main sensing run(s)
-        for run in se_runs:
-            if not is_main_sensing(run):
-                continue
-            dev_dir = os.path.join(se_dir, "by_device")
-            os.makedirs(dev_dir, exist_ok=True)
-            for ch in run.channels:
-                fname = sanitize_filename(f"{ch.label}.png")
-                plot_se_device(run, ch, os.path.join(dev_dir, fname))
+        if make_plots:
+            for run in se_runs:
+                if not is_main_sensing(run):
+                    continue
+                dev_dir = os.path.join(se_dir, "by_device")
+                os.makedirs(dev_dir, exist_ok=True)
+                for ch in run.channels:
+                    fname = sanitize_filename(f"{ch.label}.png")
+                    plot_se_device(run, ch, os.path.join(dev_dir, fname))
 
     # JG transfer sweeps -> one master, one sheet per major (n03/n05/n06)
     jg_runs = grouped.get(MajorKind.JG, [])
@@ -78,12 +82,13 @@ def analyze_folder(
         os.makedirs(jg_dir, exist_ok=True)
         sheets = {f"JG_n{run.major:02d}": analyze_jg_run(run, conditions) for run in jg_runs}
         written["JG"] = write_master(os.path.join(jg_dir, "master_JG.xlsx"), sheets)
-        dev_dir = os.path.join(jg_dir, "by_device")
-        os.makedirs(dev_dir, exist_ok=True)
-        for run in jg_runs:
-            for ch in run.channels:
-                fname = sanitize_filename(f"n{run.major:02d}_{ch.label}.png")
-                plot_jg_device(run, ch, os.path.join(dev_dir, fname))
+        if make_plots:
+            dev_dir = os.path.join(jg_dir, "by_device")
+            os.makedirs(dev_dir, exist_ok=True)
+            for run in jg_runs:
+                for ch in run.channels:
+                    fname = sanitize_filename(f"n{run.major:02d}_{ch.label}.png")
+                    plot_jg_device(run, ch, os.path.join(dev_dir, fname))
 
     # JGH hysteresis -> one master (single major n02) + per-device loop plots
     jgh_runs = grouped.get(MajorKind.JGH, [])
@@ -92,11 +97,12 @@ def analyze_folder(
         os.makedirs(jgh_dir, exist_ok=True)
         sheets = {f"JGH_n{run.major:02d}": analyze_jgh_run(run, conditions) for run in jgh_runs}
         written["JGH"] = write_master(os.path.join(jgh_dir, "master_JGH.xlsx"), sheets)
-        dev_dir = os.path.join(jgh_dir, "by_device")
-        os.makedirs(dev_dir, exist_ok=True)
-        for run in jgh_runs:
-            for ch in run.channels:
-                plot_jgh_device(run, ch, os.path.join(dev_dir, sanitize_filename(f"{ch.label}.png")))
+        if make_plots:
+            dev_dir = os.path.join(jgh_dir, "by_device")
+            os.makedirs(dev_dir, exist_ok=True)
+            for run in jgh_runs:
+                for ch in run.channels:
+                    plot_jgh_device(run, ch, os.path.join(dev_dir, sanitize_filename(f"{ch.label}.png")))
 
     # ZOZO analyzer lands here next.
     return written
