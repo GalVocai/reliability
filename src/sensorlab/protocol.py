@@ -57,6 +57,11 @@ class SEProtocol:
     recovery_pct_max: float = 100.0
     low_baseline_nA: float = 1000.0   # flag very low baseline current (noisy %)
 
+    # ppm-staircase run (n07): concentration per Part. NOT recorded in the data
+    # (the gas log only flags the 1000 ppm step), so the fixed protocol lives
+    # here. P0 = air baseline, last 0 = recovery. Edit if the staircase changes.
+    ppm_steps: tuple[float, ...] = (0.0, 10.0, 25.0, 50.0, 100.0, 1000.0, 0.0)
+
 
 @dataclass(frozen=True)
 class JGProtocol:

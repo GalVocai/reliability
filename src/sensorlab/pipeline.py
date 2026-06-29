@@ -67,9 +67,7 @@ def analyze_folder(
         # per-device verification plots for the corrected main sensing run(s)
         if make_plots:
             for run in se_runs:
-                if not is_main_sensing(run):
-                    continue
-                dev_dir = os.path.join(se_dir, "by_device")
+                dev_dir = os.path.join(se_dir, "by_device", f"n{run.major:02d}")
                 os.makedirs(dev_dir, exist_ok=True)
                 for ch in run.channels:
                     fname = sanitize_filename(f"{ch.label}.png")
