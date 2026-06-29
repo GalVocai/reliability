@@ -49,8 +49,8 @@ def jgh_curve_metrics(vj: np.ndarray, idv: np.ndarray, protocol: Protocol = DEFA
     if len(vf) < 3 or len(vr) < 3:
         return {k: float("nan") for k in ("Vth_FWD", "Vth_BWD", "Delta_Vth", "loop_area", "HI", "Ion")}
 
-    vth_f = _vth_constant_current(vf, if_, p.vth_target_nA)
-    vth_r = _vth_constant_current(vr, ir, p.vth_target_nA)
+    vth_f = _vth_constant_current(vf, if_, p.vth_target_nA, p.vth_onset_guard)
+    vth_r = _vth_constant_current(vr, ir, p.vth_target_nA, p.vth_onset_guard)
     area, hi = _loop_area_and_hi(vf, if_, vr, ir)
 
     return {

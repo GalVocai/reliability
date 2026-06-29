@@ -22,12 +22,20 @@ def _clean_curve(vj: np.ndarray, idv: np.ndarray) -> tuple[np.ndarray, np.ndarra
     return df["Vj"].to_numpy(float), df["Id"].to_numpy(float)
 
 
-def _vth_constant_current(vj: np.ndarray, idv: np.ndarray, target: float) -> float:
-    """Vj at the first upward crossing of `target` (linear interpolation)."""
-    for i in range(1, len(idv)):
+def _vth_constant_current(vj: np.ndarray, idv: np.ndarray, target: float, guard: int = 1) -> float:
+    """Vj at the first *sustained* upward crossing of `target`.
+
+    Interpolates between the two adjacent measured points (no regression). The
+    onset guard requires the next `guard` points to stay >= target, so an
+    isolated noise spike in the off region cannot trigger a false Vth.
+    """
+    n = len(idv)
+    for i in range(1, n):
         if idv[i - 1] < target <= idv[i]:
-            x0, x1, y0, y1 = vj[i - 1], vj[i], idv[i - 1], idv[i]
-            return float(x0 + (target - y0) * (x1 - x0) / (y1 - y0))
+            end = min(i + max(guard, 1), n)
+            if all(idv[j] >= target for j in range(i, end)):
+                x0, x1, y0, y1 = vj[i - 1], vj[i], idv[i - 1], idv[i]
+                return float(x0 + (target - y0) * (x1 - x0) / (y1 - y0))
     return float("nan")
 
 
@@ -58,7 +66,7 @@ def jg_curve_metrics(vj: np.ndarray, idv: np.ndarray, protocol: Protocol = DEFAU
     ioff = float(idv[0])                      # off end (Vj = -2.8)
     ratio = ion / max(abs(ioff), p.noise_floor_nA)
     return {
-        "Vth": _vth_constant_current(vj, idv, p.vth_target_nA),
+        "Vth": _vth_constant_current(vj, idv, p.vth_target_nA, p.vth_onset_guard),
         "SS": _subthreshold_swing(vj, idv, p.noise_floor_nA, p.ss_upper_frac * ion),
         "gm": _gm_max(vj, idv),
         "Ion": ion,

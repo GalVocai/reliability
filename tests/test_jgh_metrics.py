@@ -5,6 +5,9 @@ import math
 import numpy as np
 
 from sensorlab.measurements.jgh import jgh_curve_metrics
+from sensorlab.protocol import JGProtocol, Protocol
+
+PROTO = Protocol(jg=JGProtocol(vth_target_nA=10.0))   # explicit target, default-independent
 
 
 def test_jgh_hysteresis():
@@ -16,7 +19,7 @@ def test_jgh_hysteresis():
     vj = np.concatenate([vj_f, vj_r])
     idv = np.concatenate([id_f, id_r])
 
-    m = jgh_curve_metrics(vj, idv)
+    m = jgh_curve_metrics(vj, idv, PROTO)
     assert math.isclose(m["Vth_FWD"], -1.0, abs_tol=1e-3)
     assert math.isclose(m["Vth_BWD"], -1.5, abs_tol=1e-3)
     assert math.isclose(m["Delta_Vth"], 0.5, abs_tol=1e-3)   # fwd - rev
