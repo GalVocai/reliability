@@ -1,8 +1,8 @@
-"""Unit test for the ppm-staircase response (n07)."""
+"""Unit test for the standalone ppm-staircase (STEPS) mode."""
 
 import pandas as pd
 
-from sensorlab.measurements.se import analyze_se_run
+from sensorlab.measurements.steps import analyze_steps_run
 from sensorlab.model import Channel, MajorKind, Run
 
 
@@ -14,12 +14,12 @@ def _staircase_run() -> Run:
         for k in range(5):
             rows.append({"Time": part * 100 + k, "Part": part, "Vj": -0.58, "Id00": lvl})
     ch = Channel(column="Id00", index=0, esn="1", tnumber="11")
-    return Run(path="syn", major=7, kind=MajorKind.SE, test_type="SE_STATE",
+    return Run(path="syn", major=7, kind=MajorKind.STEPS, test_type="SE_STATE",
                data=pd.DataFrame(rows), channels=[ch], description={})
 
 
 def test_staircase_response_per_step():
-    r = analyze_se_run(_staircase_run()).iloc[0]
+    r = analyze_steps_run(_staircase_run()).iloc[0]
     assert r["baseline"] == 100.0
     assert r["10ppm_resp_pct"] == 10.0
     assert r["25ppm_resp_pct"] == 25.0

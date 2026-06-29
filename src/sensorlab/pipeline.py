@@ -8,10 +8,21 @@ from collections import defaultdict
 from .io import load_condition_cache, read_run, scan_result_files
 from .io.device_map import ConditionCache
 from .io.master_writer import write_master
-from .measurements import analyze_jg_run, analyze_jgh_run, analyze_se_run, analyze_zozo_run
-from .measurements.se import is_main_sensing
+from .measurements import (
+    analyze_jg_run,
+    analyze_jgh_run,
+    analyze_se_run,
+    analyze_steps_run,
+    analyze_zozo_run,
+)
 from .model import MajorKind, Run
-from .plotting import plot_jg_device, plot_jgh_device, plot_se_device, plot_zozo_device
+from .plotting import (
+    plot_jg_device,
+    plot_jgh_device,
+    plot_se_device,
+    plot_steps_device,
+    plot_zozo_device,
+)
 from .util import sanitize_filename
 
 
@@ -64,14 +75,26 @@ def analyze_folder(
         os.makedirs(se_dir, exist_ok=True)
         sheets = {f"SE_n{run.major:02d}": analyze_se_run(run, conditions) for run in se_runs}
         written["SE"] = write_master(os.path.join(se_dir, "master_SE.xlsx"), sheets)
-        # per-device verification plots for the corrected main sensing run(s)
         if make_plots:
+            dev_dir = os.path.join(se_dir, "by_device")
+            os.makedirs(dev_dir, exist_ok=True)
             for run in se_runs:
-                dev_dir = os.path.join(se_dir, "by_device", f"n{run.major:02d}")
-                os.makedirs(dev_dir, exist_ok=True)
                 for ch in run.channels:
-                    fname = sanitize_filename(f"{ch.label}.png")
-                    plot_se_device(run, ch, os.path.join(dev_dir, fname))
+                    plot_se_device(run, ch, os.path.join(dev_dir, sanitize_filename(f"{ch.label}.png")))
+
+    # STEPS (H2 ppm staircase) -> standalone master + plots
+    steps_runs = grouped.get(MajorKind.STEPS, [])
+    if steps_runs:
+        steps_dir = os.path.join(out_dir, "STEPS")
+        os.makedirs(steps_dir, exist_ok=True)
+        sheets = {f"STEPS_n{run.major:02d}": analyze_steps_run(run, conditions) for run in steps_runs}
+        written["STEPS"] = write_master(os.path.join(steps_dir, "master_STEPS.xlsx"), sheets)
+        if make_plots:
+            dev_dir = os.path.join(steps_dir, "by_device")
+            os.makedirs(dev_dir, exist_ok=True)
+            for run in steps_runs:
+                for ch in run.channels:
+                    plot_steps_device(run, ch, os.path.join(dev_dir, sanitize_filename(f"{ch.label}.png")))
 
     # JG transfer sweeps -> one master, one sheet per major (n03/n05/n06)
     jg_runs = grouped.get(MajorKind.JG, [])

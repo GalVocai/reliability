@@ -11,6 +11,7 @@ from ..model import Channel, MajorKind, Run, device_columns_of
 from ..protocol import (
     ALLOWED_EXCEL_EXTENSIONS,
     DATA_SHEET,
+    DEFAULT,
     DESCRIPTION_SHEET,
     ESN_KEY_RE,
     MAJOR_RE,
@@ -50,6 +51,10 @@ def _classify(test_type: str, data: pd.DataFrame) -> MajorKind:
         # ZOZO is an SE_STATE run that toggles Vj between distinct levels.
         if "Vj" in data.columns and data["Vj"].round(3).nunique() > 1:
             return MajorKind.ZOZO
+        # constant-Vj SE: 4 parts = main sensing; ppm-staircase length = STEPS.
+        nparts = data["Part"].nunique() if "Part" in data.columns else 1
+        if nparts == len(DEFAULT.se.ppm_steps):
+            return MajorKind.STEPS
         return MajorKind.SE
     return MajorKind.UNKNOWN
 

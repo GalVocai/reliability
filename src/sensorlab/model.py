@@ -11,7 +11,8 @@ from .protocol import DEVICE_RE
 
 
 class MajorKind(str, Enum):
-    SE = "SE"        # sensing (Id vs time at fixed bias)
+    SE = "SE"        # sensing (Id vs time at fixed bias): baseline/exposure/recovery
+    STEPS = "STEPS"  # ppm staircase (SE_STATE with many concentration steps)
     ZOZO = "ZOZO"    # SE_STATE alternating between two states
     JG = "JG"        # unidirectional transfer sweep, repeated
     JGH = "JGH"      # bidirectional hysteresis sweep

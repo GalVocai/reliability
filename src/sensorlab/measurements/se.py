@@ -84,9 +84,6 @@ def is_main_sensing(run: Run, protocol: Protocol = DEFAULT) -> bool:
     return set(run.parts()) == {p.baseline_part, p.response_part, p.settle_part, p.recovery_part}
 
 
-def is_ppm_staircase(run: Run, protocol: Protocol = DEFAULT) -> bool:
-    """SE run whose parts match the ppm-staircase sequence (n07)."""
-    return not is_main_sensing(run, protocol) and len(run.parts()) == len(protocol.se.ppm_steps)
 
 
 def _se_flags(run: Run, col: str, baseline: float, response: float,
@@ -114,7 +111,6 @@ def analyze_se_run(
     p = protocol.se
     levels = device_part_levels(run, protocol)
     corrected = is_main_sensing(run, protocol)
-    staircase = is_ppm_staircase(run, protocol)
     part_ids = sorted(next(iter(levels.values()))) if levels else []
 
     rows: list[dict[str, object]] = []
@@ -144,23 +140,6 @@ def analyze_se_run(
                 recovery_pct=recovery_pct,
                 flags=_se_flags(run, ch.column, baseline, response, recovery_pct, protocol),
             )
-        elif staircase:
-            # ppm staircase: response of each H2 step relative to the air baseline (P0)
-            ppm = p.ppm_steps
-            baseline = lv[part_ids[0]]
-            row["baseline"] = baseline
-            for i, k in enumerate(part_ids):
-                if i == 0:
-                    continue
-                conc = ppm[i] if i < len(ppm) else None
-                resp = _safe_pct(lv[k] - baseline, baseline)
-                if conc == 0:                                # trailing air step = recovery
-                    row["recovery_level"] = lv[k]
-                    row["recovery_pct"] = resp
-                else:
-                    label = f"{int(conc)}ppm" if conc is not None else f"P{k}"
-                    row[f"{label}_level"] = lv[k]
-                    row[f"{label}_resp_pct"] = resp
         else:
             # fallback: generic per-part levels + response vs baseline
             base = lv.get(part_ids[0]) if part_ids else float("nan")
