@@ -52,7 +52,6 @@ def analyze_folder(
     out_dir: str | None = None,
     conditions: ConditionCache | None = None,
     make_plots: bool = True,
-    experiment_type: str = "",
     day: str = "",
 ) -> dict[str, str]:
     """Run the available analyzers and write one master per test type.
@@ -83,7 +82,7 @@ def analyze_folder(
             for run in se_runs:
                 for ch in run.channels:
                     plot_se_device(run, ch, os.path.join(dev_dir, sanitize_filename(f"{ch.label}.png")),
-                                   experiment_type=experiment_type, day=day)
+                                   experiment_type=run.kind.value, day=day)
 
     # STEPS (H2 ppm staircase) -> standalone master + plots
     steps_runs = grouped.get(MajorKind.STEPS, [])
@@ -98,7 +97,7 @@ def analyze_folder(
             for run in steps_runs:
                 for ch in run.channels:
                     plot_steps_device(run, ch, os.path.join(dev_dir, sanitize_filename(f"{ch.label}.png")),
-                                      experiment_type=experiment_type, day=day)
+                                      experiment_type=run.kind.value, day=day)
 
     # JG transfer sweeps -> one master, one sheet per major (n03/n05/n06)
     jg_runs = grouped.get(MajorKind.JG, [])
@@ -114,7 +113,7 @@ def analyze_folder(
                 for ch in run.channels:
                     fname = sanitize_filename(f"n{run.major:02d}_{ch.label}.png")
                     plot_jg_device(run, ch, os.path.join(dev_dir, fname),
-                                   experiment_type=experiment_type, day=day)
+                                   experiment_type=run.kind.value, day=day)
 
     # JGH hysteresis -> one master (single major n02) + per-device loop plots
     jgh_runs = grouped.get(MajorKind.JGH, [])
@@ -129,7 +128,7 @@ def analyze_folder(
             for run in jgh_runs:
                 for ch in run.channels:
                     plot_jgh_device(run, ch, os.path.join(dev_dir, sanitize_filename(f"{ch.label}.png")),
-                                    experiment_type=experiment_type, day=day)
+                                    experiment_type=run.kind.value, day=day)
 
     # ZOZO -> one master + per-device plots
     zozo_runs = grouped.get(MajorKind.ZOZO, [])
@@ -144,6 +143,6 @@ def analyze_folder(
             for run in zozo_runs:
                 for ch in run.channels:
                     plot_zozo_device(run, ch, os.path.join(dev_dir, sanitize_filename(f"{ch.label}.png")),
-                                     experiment_type=experiment_type, day=day)
+                                     experiment_type=run.kind.value, day=day)
 
     return written
