@@ -23,18 +23,22 @@ def split_forward_reverse(vj: np.ndarray, idv: np.ndarray):
     return (vj[: imax + 1], idv[: imax + 1]), (vj[imax:], idv[imax:])
 
 
-def _hysteresis_index(vf: np.ndarray, if_: np.ndarray, vr: np.ndarray, ir: np.ndarray) -> float:
-    """Normalized loop area (matches the legacy HI definition):
-    integral|fwd - rev| / integral max(fwd, rev) over the overlapping Vj range."""
+def _loop_area_and_hi(vf: np.ndarray, if_: np.ndarray, vr: np.ndarray, ir: np.ndarray) -> tuple[float, float]:
+    """Return (loop_area, HI) over the overlapping Vj range.
+
+    loop_area = integral |Id_fwd - Id_rev| dVj            (area-based hysteresis, nA*V)
+    HI        = loop_area / integral max(Id_fwd, Id_rev)  (normalized, legacy definition)
+    """
     mask = (vf >= float(vr.min())) & (vf <= float(vr.max()))
     xg, yf = vf[mask], if_[mask]
     if xg.size < 2:
-        return float("nan")
+        return float("nan"), float("nan")
     yb = np.interp(xg, vr, ir)
     _trapz = getattr(np, "trapezoid", np.trapz)   # numpy>=2 renamed trapz
-    num = float(_trapz(np.abs(yf - yb), xg))
+    area = float(_trapz(np.abs(yf - yb), xg))
     den = float(_trapz(np.maximum(yf, yb), xg))
-    return num / den if abs(den) > 1e-30 else float("nan")
+    hi = area / den if abs(den) > 1e-30 else float("nan")
+    return area, hi
 
 
 def jgh_curve_metrics(vj: np.ndarray, idv: np.ndarray, protocol: Protocol = DEFAULT) -> dict[str, float]:
@@ -43,16 +47,18 @@ def jgh_curve_metrics(vj: np.ndarray, idv: np.ndarray, protocol: Protocol = DEFA
     vf, if_ = _clean_curve(vf, if_)
     vr, ir = _clean_curve(vr, ir)
     if len(vf) < 3 or len(vr) < 3:
-        return {k: float("nan") for k in ("Vth_FWD", "Vth_BWD", "Delta_Vth", "HI", "Ion")}
+        return {k: float("nan") for k in ("Vth_FWD", "Vth_BWD", "Delta_Vth", "loop_area", "HI", "Ion")}
 
     vth_f = _vth_constant_current(vf, if_, p.vth_target_nA)
     vth_r = _vth_constant_current(vr, ir, p.vth_target_nA)
+    area, hi = _loop_area_and_hi(vf, if_, vr, ir)
 
     return {
         "Vth_FWD": vth_f,
         "Vth_BWD": vth_r,
-        "Delta_Vth": vth_f - vth_r,            # hysteresis voltage shift (fwd - rev)
-        "HI": _hysteresis_index(vf, if_, vr, ir),
+        "Delta_Vth": vth_f - vth_r,            # (1) hysteresis by Vth shift (fwd - rev)
+        "loop_area": area,                     # (2) hysteresis by loop area (nA*V)
+        "HI": hi,                              # (3) hysteresis by normalized index
         "Ion": float(max(if_.max(), ir.max())),
     }
 

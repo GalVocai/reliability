@@ -21,4 +21,5 @@ def test_jgh_hysteresis():
     assert math.isclose(m["Vth_BWD"], -1.5, abs_tol=1e-3)
     assert math.isclose(m["Delta_Vth"], 0.5, abs_tol=1e-3)   # fwd - rev
     assert m["Ion"] == 50000.0
+    assert m["loop_area"] > 0          # area-based hysteresis
     assert 0.0 < m["HI"] <= 1.0        # normalized loop area
