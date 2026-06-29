@@ -14,6 +14,10 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
+import pandas as pd
+
+from .compare import run_degradation
+from .degradation import find_masters
 from .io.device_map import load_condition_cache
 from .pipeline import all_esns, analyze_folder, load_folder
 
@@ -56,6 +60,8 @@ class SensorLabApp(tk.Tk):
         run.pack(fill="x", **pad)
         self.run_btn = ttk.Button(run, text="Run analysis", command=self._run, state="disabled")
         self.run_btn.pack(side="left")
+        ttk.Button(run, text="Compare timepoints (degradation)…",
+                   command=lambda: DegradationWindow(self)).pack(side="left", padx=12)
 
         ttk.Label(self, text="Log:").pack(anchor="w", **pad)
         self.log = ScrolledText(self, height=14, state="disabled", font=("Consolas", 9))
@@ -135,6 +141,118 @@ class SensorLabApp(tk.Tk):
         except queue.Empty:
             pass
         self.after(100, self._drain_log)
+
+    def _log(self, text: str) -> None:
+        self.log.config(state="normal")
+        self.log.insert("end", text + "\n")
+        self.log.see("end")
+        self.log.config(state="disabled")
+
+
+def _peek_day(folder: str) -> str:
+    """Read the 'day' tag from any master in a timepoint folder."""
+    for _cond, _mode, path in find_masters(folder):
+        try:
+            df = pd.read_excel(path, nrows=1)
+            if "day" in df.columns and len(df):
+                return str(df["day"].iloc[0])
+        except Exception:
+            pass
+    return ""
+
+
+class DegradationWindow(tk.Toplevel):
+    """Pick timepoint folders, mark the baseline, and build the degradation study."""
+
+    def __init__(self, master: tk.Tk) -> None:
+        super().__init__(master)
+        self.title("Compare timepoints — degradation")
+        self.geometry("720x560")
+        self.rows: list[dict] = []
+        self.baseline = tk.IntVar(value=0)
+        self.out_dir: str | None = None
+        self._queue: queue.Queue[str] = queue.Queue()
+        pad = {"padx": 8, "pady": 4}
+
+        top = ttk.Frame(self)
+        top.pack(fill="x", **pad)
+        ttk.Button(top, text="Add timepoint folder…", command=self._add).pack(side="left")
+        ttk.Button(top, text="Output folder…", command=self._pick_out).pack(side="left", padx=8)
+        self.out_lbl = ttk.Label(top, text="(output: parent of first folder)", foreground="#666")
+        self.out_lbl.pack(side="left")
+
+        ttk.Label(self, text="Timepoints (select the baseline):").pack(anchor="w", **pad)
+        self.rows_frame = ttk.Frame(self)
+        self.rows_frame.pack(fill="x", **pad)
+
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", **pad)
+        self.plots_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bar, text="Trend plots", variable=self.plots_var).pack(side="left")
+        self.run_btn = ttk.Button(bar, text="Run degradation", command=self._run, state="disabled")
+        self.run_btn.pack(side="left", padx=10)
+
+        self.log = ScrolledText(self, height=14, state="disabled", font=("Consolas", 9))
+        self.log.pack(fill="both", expand=True, **pad)
+        self.after(100, self._drain)
+
+    def _add(self) -> None:
+        folder = filedialog.askdirectory(title="Select a timepoint folder")
+        if not folder:
+            return
+        if not list(find_masters(folder)):
+            messagebox.showwarning("No masters", "No analysis masters found in this folder.")
+            return
+        i = len(self.rows)
+        row = ttk.Frame(self.rows_frame)
+        row.pack(fill="x", pady=1)
+        ttk.Radiobutton(row, variable=self.baseline, value=i).pack(side="left")
+        ttk.Label(row, text=os.path.basename(folder), width=42).pack(side="left")
+        day_var = tk.StringVar(value=_peek_day(folder) or "")
+        ttk.Label(row, text="day:").pack(side="left")
+        ttk.Entry(row, textvariable=day_var, width=10).pack(side="left")
+        self.rows.append({"folder": folder, "day": day_var})
+        self.run_btn.config(state="normal")
+
+    def _pick_out(self) -> None:
+        d = filedialog.askdirectory(title="Select output folder")
+        if d:
+            self.out_dir = d
+            self.out_lbl.config(text=f"output: {d}")
+
+    def _run(self) -> None:
+        timepoints = [(r["day"].get().strip(), r["folder"]) for r in self.rows]
+        baseline_day = timepoints[self.baseline.get()][0]
+        out = self.out_dir or os.path.dirname(self.rows[0]["folder"])
+        self.run_btn.config(state="disabled")
+        self._log(f"Baseline = '{baseline_day}'  |  output -> {out}")
+
+        def worker() -> None:
+            try:
+                root = run_degradation(timepoints, out_dir=out, baseline_day=baseline_day,
+                                       make_plots=self.plots_var.get(), log=self._queue.put)
+                self._queue.put("__DONE__:" + root)
+            except Exception as exc:
+                self._queue.put("__ERROR__:" + str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _drain(self) -> None:
+        try:
+            while True:
+                msg = self._queue.get_nowait()
+                if msg.startswith("__DONE__:"):
+                    self._log("✔ degradation -> " + msg[len("__DONE__:"):])
+                    self.run_btn.config(state="normal")
+                    messagebox.showinfo("Done", "Degradation study complete.")
+                elif msg.startswith("__ERROR__:"):
+                    self._log("ERROR: " + msg[len("__ERROR__:"):])
+                    self.run_btn.config(state="normal")
+                else:
+                    self._log(msg)
+        except queue.Empty:
+            pass
+        self.after(100, self._drain)
 
     def _log(self, text: str) -> None:
         self.log.config(state="normal")
