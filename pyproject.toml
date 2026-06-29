@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sensorlab"
+version = "0.1.0"
+description = "Unified analysis pipeline for transistor/sensor electrical characterization (replaces Excel Device Splitter + SETimeSeriesProcessor)."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "pandas",
+    "openpyxl",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+gui = []  # tkinter ships with CPython on Windows
+
+[project.scripts]
+sensorlab = "sensorlab.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
