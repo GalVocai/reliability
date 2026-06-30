@@ -25,7 +25,8 @@ from .io.device_map import load_condition_cache
 from .model import MajorKind
 from .pipeline import all_esns, analyze_folder, group_by_kind, load_folder
 from .plotting import (
-    load_style, render_jg, render_jg_h2, render_jgh, render_se, render_se_stack, render_steps,
+    load_style, render_jg, render_jg_h2, render_jgh, render_se, render_se_stack,
+    render_steps, render_steps_stack,
 )
 from .protocol import DEFAULT as PROTO
 
@@ -450,11 +451,26 @@ class PlotStudio(tk.Toplevel):
         self._h2_btn = self._attr_color_btn(colors, "H2", "h2_color")
         self._se_btn = self._attr_color_btn(colors, "SE / line", "se_color")
 
-        se = ttk.LabelFrame(p, text="  SE  ", padding=8)
+        lines = ttk.LabelFrame(p, text="  Line  ", padding=8)
+        lines.pack(fill="x", pady=4)
+        ttk.Label(lines, text="style:").pack(side="left")
+        self.ls_var = tk.StringVar(value=self.style_cfg.linestyle)
+        ttk.Combobox(lines, textvariable=self.ls_var, width=8, state="readonly",
+                     values=["-", "--", ":", "-."]).pack(side="left", padx=4)
+        self.ls_var.trace_add("write", lambda *a: self._apply_simple())
+        ttk.Label(lines, text="width").pack(side="left", padx=(10, 2))
+        self.lw = ttk.Scale(lines, from_=0.5, to=3.0, value=self.style_cfg.linewidth,
+                            command=lambda v: self._apply_simple())
+        self.lw.pack(side="left", fill="x", expand=True)
+
+        se = ttk.LabelFrame(p, text="  Stack per ESN  ", padding=8)
         se.pack(fill="x", pady=4)
         self.stack_var = tk.BooleanVar(value=self.style_cfg.se_stack_per_esn)
-        ttk.Checkbutton(se, text="Stack transistors per ESN", variable=self.stack_var,
-                        command=self._apply_simple).pack(anchor="w")
+        ttk.Checkbutton(se, text="SE", variable=self.stack_var,
+                        command=self._apply_simple).pack(side="left")
+        self.steps_stack_var = tk.BooleanVar(value=self.style_cfg.steps_stack_per_esn)
+        ttk.Checkbutton(se, text="STEPS", variable=self.steps_stack_var,
+                        command=self._apply_simple).pack(side="left", padx=10)
 
         steps = ttk.LabelFrame(p, text="  STEPS gradient  ", padding=8)
         steps.pack(fill="x", pady=4)
@@ -468,12 +484,6 @@ class PlotStudio(tk.Toplevel):
         self.intensity = ttk.Scale(steps, from_=0.2, to=1.0, value=self.style_cfg.steps_intensity,
                                    command=lambda v: self._apply_simple())
         self.intensity.pack(fill="x")
-
-        lw = ttk.LabelFrame(p, text="  Line width  ", padding=8)
-        lw.pack(fill="x", pady=4)
-        self.lw = ttk.Scale(lw, from_=0.5, to=3.0, value=self.style_cfg.linewidth,
-                            command=lambda v: self._apply_simple())
-        self.lw.pack(fill="x")
 
         ttk.Button(p, text="💾  Save as default style", style="Accent.TButton",
                    command=self._save).pack(fill="x", pady=(8, 0))
@@ -518,10 +528,12 @@ class PlotStudio(tk.Toplevel):
         s = self.style_cfg
         s.same_vbg_color = self.same_var.get()
         s.se_stack_per_esn = self.stack_var.get()
+        s.steps_stack_per_esn = self.steps_stack_var.get()
         s.steps_gradient = self.grad_var.get()
         s.steps_cmap = self.cmap_var.get()
         s.steps_intensity = float(self.intensity.get())
         s.linewidth = float(self.lw.get())
+        s.linestyle = self.ls_var.get()
         self._redraw()
 
     # ---- data + draw -------------------------------------------------------
@@ -578,7 +590,11 @@ class PlotStudio(tk.Toplevel):
                 else:
                     render_se(self.ax, self.se_run, ch, s, day="preview")
             elif t == "STEPS" and self.steps_run:
-                render_steps(self.ax, self.steps_run, ch, s, day="preview")
+                if s.steps_stack_per_esn:
+                    chs = [c for c in self.steps_run.channels if c.esn == ch.esn]
+                    render_steps_stack(self.ax, self.steps_run, chs, s, day="preview")
+                else:
+                    render_steps(self.ax, self.steps_run, ch, s, day="preview")
             elif t == "JG" and self.jg_run:
                 render_jg(self.ax, self.jg_run, ch, s, day="preview")
             elif t == "JG_H2" and self.air and self.h2:

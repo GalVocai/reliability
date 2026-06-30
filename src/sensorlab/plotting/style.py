@@ -31,6 +31,7 @@ class StyleConfig:
 
     # --- lines -----------------------------------------------------------
     linewidth: float = 1.0
+    linestyle: str = "-"                   # "-", "--", ":", "-." (SE/STEPS/JG main line)
 
     # --- SE / time-series ------------------------------------------------
     se_color: str = "#1f77b4"
@@ -40,6 +41,7 @@ class StyleConfig:
     steps_gradient: bool = True
     steps_cmap: str = "Blues"
     steps_intensity: float = 0.9          # 0..1 max shade depth
+    steps_stack_per_esn: bool = False     # overlay a card's transistors on one staircase
 
     # -- helpers ----------------------------------------------------------
     def bg_color(self, vb: int) -> str:

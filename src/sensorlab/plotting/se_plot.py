@@ -57,7 +57,7 @@ def _continuous(run: Run, col: str, protocol: Protocol):
 def render_se(ax, run: Run, ch: Channel, style: StyleConfig = DEFAULT_STYLE,
               protocol: Protocol = DEFAULT, experiment_type: str = "", day: str = "") -> None:
     X, Y, bounds, baseline, response = _continuous(run, ch.column, protocol)
-    ax.plot(X, Y, color=style.se_color, lw=style.linewidth)
+    ax.plot(X, Y, color=style.se_color, lw=style.linewidth, ls=style.linestyle)
     for i, (bx, k) in enumerate(bounds):
         ax.axvline(bx, ls=":", color="#bbbbbb", lw=0.8)
         ax.annotate(_PART_LABEL.get(k, f"P{k}"), xy=(bx, 1.0), xycoords=("data", "axes fraction"),

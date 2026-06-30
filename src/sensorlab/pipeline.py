@@ -27,6 +27,7 @@ from .plotting import (
     plot_se_device,
     plot_se_esn,
     plot_steps_device,
+    plot_steps_esn,
     plot_zozo_device,
 )
 from .util import sanitize_filename
@@ -146,9 +147,19 @@ def analyze_folder(
         finish("STEPS", {f"STEPS_n{r.major:02d}": analyze_steps_run(r, conditions) for r in steps_runs})
         if make_plots:
             for run in steps_runs:
-                for ch in run.channels:
-                    plot_steps_device(run, ch, os.path.join(_dev_dir(out_dir, conditions, ch, "STEPS"),
-                                      sanitize_filename(f"{ch.label}.png")), experiment_type=run.kind.value, day=day, style=style)
+                if style.steps_stack_per_esn:
+                    by_esn: dict[str, list] = {}
+                    for ch in run.channels:
+                        by_esn.setdefault(ch.esn, []).append(ch)
+                    for esn, chs in by_esn.items():
+                        d = _dev_dir(out_dir, conditions, chs[0], "STEPS")
+                        plot_steps_esn(run, chs, os.path.join(d, sanitize_filename(f"ESN{esn}.png")),
+                                       experiment_type=run.kind.value, day=day, style=style)
+                else:
+                    for ch in run.channels:
+                        plot_steps_device(run, ch, os.path.join(_dev_dir(out_dir, conditions, ch, "STEPS"),
+                                          sanitize_filename(f"{ch.label}.png")),
+                                          experiment_type=run.kind.value, day=day, style=style)
 
     # JG transfer sweeps (n03/n05/n06)
     jg_runs = grouped.get(MajorKind.JG, [])

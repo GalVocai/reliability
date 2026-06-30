@@ -27,7 +27,7 @@ def render_jg(ax, run: Run, ch: Channel, style: StyleConfig = DEFAULT_STYLE,
         m = jg_curve_metrics(sub["Vj"].to_numpy(float), sub[ch.column].to_numpy(float), protocol)
         color = style.bg_color(vb)
         px, py = positive_despiked(vj, idv)
-        ax.plot(px, py, color=color, lw=style.linewidth,
+        ax.plot(px, py, color=color, lw=style.linewidth, ls=style.linestyle,
                 label=f"BG={vb}: Vth={m['Vth']:.2f} SS={m['SS']:.0f} Ion/Ioff={m['Ion_Ioff']:.0f}")
         if not np.isnan(m["Vth"]):
             ax.axvline(m["Vth"], ls="--", color=color, lw=0.8)
