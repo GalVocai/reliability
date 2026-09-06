@@ -41,6 +41,19 @@ def _build_channels(data: pd.DataFrame, description: dict[str, object]) -> list[
     return channels
 
 
+def _toggles_vj(data: pd.DataFrame) -> bool:
+    """True when Vj is held at distinct levels across Parts (a ZOZO run).
+
+    Compares per-Part medians rather than raw unique values, so a stray noisy
+    Vj sample in a constant-Vj SE run cannot misclassify it as ZOZO.
+    """
+    if "Vj" not in data.columns:
+        return False
+    if "Part" in data.columns:
+        return data.groupby("Part")["Vj"].median().round(3).nunique() > 1
+    return data["Vj"].round(3).nunique() > 1
+
+
 def _classify(test_type: str, data: pd.DataFrame) -> MajorKind:
     t = test_type.strip().upper()
     if t == "JGH":
@@ -49,7 +62,7 @@ def _classify(test_type: str, data: pd.DataFrame) -> MajorKind:
         return MajorKind.JG
     if t.startswith("SE"):
         # ZOZO is an SE_STATE run that toggles Vj between distinct levels.
-        if "Vj" in data.columns and data["Vj"].round(3).nunique() > 1:
+        if _toggles_vj(data):
             return MajorKind.ZOZO
         # constant-Vj SE: 4 parts = main sensing; ppm-staircase length = STEPS.
         nparts = data["Part"].nunique() if "Part" in data.columns else 1
@@ -85,11 +98,57 @@ def read_run(path: str) -> Run:
     )
 
 
+def _is_junk_file(name: str) -> bool:
+    """Excel ``~$`` lock files (created while a workbook is open) and hidden
+    files match the extension + major-token filters but are not readable."""
+    return name.startswith("~$") or name.startswith(".")
+
+
 def scan_result_files(folder: str) -> list[str]:
     """Result files in a run folder (those carrying an ``_n0X_`` major token)."""
     found: list[str] = []
     for name in os.listdir(folder):
         ext = os.path.splitext(name)[1].lower()
+        if _is_junk_file(name):
+            continue
         if ext in ALLOWED_EXCEL_EXTENSIONS and MAJOR_RE.search(name):
             found.append(os.path.join(folder, name))
     return sorted(found, key=lambda p: _major_from_name(p))
+
+
+STATES_SHEET = "States"
+
+
+def load_states(folder: str) -> dict[int, dict[str, tuple[float, float]]]:
+    """Per-channel working points from the script file's ``States`` sheet.
+
+    The script .xlsx sits in the results folder (no ``_n0X_`` token in its
+    name) and defines, per channel Number and per StateName (State1/State2),
+    the setpoints PortJG1 (Vj) and PortBG (Vb).
+
+    Returns {channel index: {"State1": (Vj, Vb), "State2": (Vj, Vb)}} — empty
+    dict when no script file is found.
+    """
+    for name in sorted(os.listdir(folder)):
+        ext = os.path.splitext(name)[1].lower()
+        if _is_junk_file(name) or ext not in ALLOWED_EXCEL_EXTENSIONS or MAJOR_RE.search(name):
+            continue
+        path = os.path.join(folder, name)
+        try:
+            xl = pd.ExcelFile(path)
+            if STATES_SHEET not in xl.sheet_names:
+                continue
+            df = xl.parse(STATES_SHEET)
+        except Exception:
+            continue
+        out: dict[int, dict[str, tuple[float, float]]] = {}
+        for _, r in df.iterrows():
+            try:
+                idx = int(r["Number"])
+                out.setdefault(idx, {})[str(r["StateName"]).strip()] = (
+                    float(r["PortJG1"]), float(r["PortBG"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if out:
+            return out
+    return {}

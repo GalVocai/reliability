@@ -22,6 +22,23 @@ def _clean_curve(vj: np.ndarray, idv: np.ndarray) -> tuple[np.ndarray, np.ndarra
     return df["Vj"].to_numpy(float), df["Id"].to_numpy(float)
 
 
+def back_gate_groups(data: pd.DataFrame) -> list[tuple[object, pd.DataFrame]]:
+    """Split a sweep table by back-gate voltage, tolerant of recorded noise.
+
+    Vb is grouped on the value rounded to 10 mV: an exact-setpoint file (0, 4)
+    behaves exactly as before, while a measured 3.9997 V still lands in the
+    4 V group instead of silently producing an empty subset (-> all-NaN
+    metrics). Labels are ints when the voltage is integral ('bg4'), else the
+    rounded float.
+    """
+    vb_r = data["Vb"].round(2)
+    out: list[tuple[object, pd.DataFrame]] = []
+    for vb in sorted(vb_r.dropna().unique()):
+        label = int(vb) if float(vb).is_integer() else float(vb)
+        out.append((label, data[vb_r == vb]))
+    return out
+
+
 def _vth_constant_current(vj: np.ndarray, idv: np.ndarray, target: float, guard: int = 1) -> float:
     """Vj at the first *sustained* upward crossing of `target`.
 
@@ -57,21 +74,51 @@ def _gm_max(vj: np.ndarray, idv: np.ndarray) -> float:
     return float(np.nanmax(np.gradient(idv, vj)))
 
 
+def _snr_off(idv: np.ndarray) -> float:
+    """SNR of the off-region current: |mean| / std over the low-Vj quarter."""
+    off = idv[: max(5, len(idv) // 4)]
+    sd = float(np.std(off))
+    if sd == 0 or off.size < 3:
+        return float("nan")
+    return float(abs(np.mean(off)) / sd)
+
+
+def _vth_second_derivative(vj: np.ndarray, idv: np.ndarray) -> float:
+    """Vth at the inflection of the transfer curve: the zero crossing of
+    d2Id/dVj2 at the max-gm point (interpolated between adjacent samples)."""
+    if len(vj) < 5:
+        return float("nan")
+    gm = np.gradient(idv, vj)
+    d2 = np.gradient(gm, vj)
+    i = int(np.nanargmax(gm))
+    # walk rightward from the gm peak to the next sign change of d2 (the
+    # curve inflects past the peak; left of it d2 is positive by construction)
+    for j in range(max(i, 1), len(d2)):
+        if d2[j - 1] > 0 >= d2[j] or d2[j - 1] >= 0 > d2[j]:
+            y0, y1 = d2[j - 1], d2[j]
+            if y0 == y1:
+                return float(vj[j])
+            return float(vj[j - 1] + y0 * (vj[j] - vj[j - 1]) / (y0 - y1))
+    return float(vj[i])
+
+
 def jg_curve_metrics(vj: np.ndarray, idv: np.ndarray, protocol: Protocol = DEFAULT) -> dict[str, float]:
     p = protocol.jg
     vj, idv = _clean_curve(vj, idv)
     if len(vj) < 3:
-        return {k: float("nan") for k in ("Vth", "SS", "gm", "Ion", "Ioff", "Ion_Ioff")}
+        return {k: float("nan") for k in ("Vth", "Vth_d2", "SS", "gm", "Ion", "Ioff", "Ion_Ioff", "SNR_off")}
     ion = float(idv[-1])                      # on end (Vj = 0.3)
     ioff = float(idv[0])                      # off end (Vj = -2.8)
-    ratio = ion / max(abs(ioff), p.noise_floor_nA)
+    ratio = ion / max(ioff, p.noise_floor_nA)
     return {
         "Vth": _vth_constant_current(vj, idv, p.vth_target_nA, p.vth_onset_guard),
+        "Vth_d2": _vth_second_derivative(vj, idv),
         "SS": _subthreshold_swing(vj, idv, p.noise_floor_nA, p.ss_upper_frac * ion),
         "gm": _gm_max(vj, idv),
         "Ion": ion,
         "Ioff": ioff,
         "Ion_Ioff": ratio,
+        "SNR_off": _snr_off(idv),
     }
 
 
@@ -83,7 +130,8 @@ def _jg_flags(m: dict[str, float], protocol: Protocol) -> str:
         flags.append("ss_unreliable")
     if not pd.isna(m["Ion_Ioff"]) and m["Ion_Ioff"] < protocol.jg.min_on_off:
         flags.append("low_on_off")
-    return ";".join(flags)
+    # 'ok' (not '') so the master cell isn't blank -> NaN when read back
+    return ";".join(flags) or "ok"
 
 
 def relevant_part(run: Run, protocol: Protocol = DEFAULT) -> int:
@@ -97,7 +145,7 @@ def analyze_jg_run(
     protocol: Protocol = DEFAULT,
 ) -> pd.DataFrame:
     data = run.parts()[relevant_part(run, protocol)]
-    back_gates = sorted(int(v) for v in data["Vb"].dropna().unique())
+    gate_groups = back_gate_groups(data)
 
     rows: list[dict[str, object]] = []
     for ch in run.channels:
@@ -106,8 +154,7 @@ def analyze_jg_run(
             "TNumber": ch.tnumber,
             "condition": conditions.get(ch.esn) if conditions else "",
         }
-        for vb in back_gates:
-            sub = data[data["Vb"] == vb]
+        for vb, sub in gate_groups:
             m = jg_curve_metrics(sub["Vj"].to_numpy(float), sub[ch.column].to_numpy(float), protocol)
             for k, v in m.items():
                 row[f"{k}_bg{vb}"] = v

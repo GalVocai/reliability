@@ -34,11 +34,15 @@ retired.
 ```
 src/sensorlab/
   protocol.py     # all fixed parameters, one place
+  model.py        # typed Run / Channel objects parsed from result files
+  pipeline.py     # folder orchestration: load -> classify -> analyze -> masters
   util/           # shared helpers (deduplicated from both legacy files)
-  io/             # excel read/write            (next)
-  sensing.py      # SE metrics                  (first port target)
-  jg.py idvt.py hysteresis.py degradation.py    (later)
-  cli.py gui.py   # thin frontends             (later)
+  io/             # result reader, condition cache, master writer
+  measurements/   # SE / STEPS / ZOZO / JG / JGH / JG_H2 metrics
+  plotting/       # per-device plots + shared style config
+  degradation.py  # cross-timepoint tidy tables (delta / degradation%)
+  compare.py      # degradation study orchestration + trend plots
+  cli.py gui.py   # thin frontends
 tests/
   fixtures/       # legacy raw + *_analyzed.xlsx = regression ground truth
 ```
@@ -51,10 +55,36 @@ pip install -e .[dev]
 pytest
 ```
 
+## Build the Windows GUI executable
+
+Install the project and PyInstaller once, then run the build script:
+
+```powershell
+py -3 -m pip install -e ".[dev]" pyinstaller
+.\build_exe.ps1
+```
+
+The windowed, single-file executable is written to `dist\SensorLab.exe`.
+
+## Degradation time axis
+
+The degradation window can present checkpoints as either **Days** or
+**Cycle #**. Keep the timepoint fields as their original elapsed-day labels
+(`baseline`, `2D`, `7D`, ...). In Cycle # mode, set the cycle duration in
+hours; SensorLab uses:
+
+```
+cycle_num = day_num * 24 / hours_per_cycle
+```
+
+The day columns are preserved in the exported workbooks and an estimated
+`cycle_num` column is added. With the default 2-hour cycle, 2D, 7D, and 13D
+are displayed as cycles 24, 84, and 156 respectively.
+
 ## Status
 
 - [x] Phase 0 -- skeleton, `protocol.py`, shared utils, test harness, fixtures
-- [ ] Phase 1 -- port SE sensing metrics (time-window anchoring) + golden test
-- [ ] Phase 2 -- JG / IdVt / hysteresis / ET / degradation
-- [x] Phase 3 -- CLI + thin GUI (load folder, Day#, condition cache)
-- [ ] Phase 4 -- package to .exe
+- [x] Phase 1 -- SE sensing metrics (time-window anchoring) + golden test
+- [x] Phase 2 -- JG / JGH hysteresis / JG_H2 / STEPS / ZOZO / degradation
+- [x] Phase 3 -- CLI + thin GUI (load folder, Day#, condition cache, plot studio)
+- [x] Phase 4 -- package to .exe

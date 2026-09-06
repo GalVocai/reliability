@@ -4,7 +4,7 @@ from .steps_plot import plot_steps_device, plot_steps_esn, render_steps, render_
 from .jg_plot import plot_jg_device, render_jg
 from .jg_h2_plot import plot_jg_h2_device, render_jg_h2
 from .jgh_plot import plot_jgh_device, render_jgh
-from .zozo_plot import plot_zozo_device
+from .zozo_plot import plot_zozo_device, plot_zozo_esn, render_zozo, render_zozo_stack
 
 __all__ = [
     "StyleConfig", "DEFAULT_STYLE", "load_style",
@@ -13,5 +13,5 @@ __all__ = [
     "plot_jg_device", "render_jg",
     "plot_jg_h2_device", "render_jg_h2",
     "plot_jgh_device", "render_jgh",
-    "plot_zozo_device",
+    "plot_zozo_device", "plot_zozo_esn", "render_zozo", "render_zozo_stack",
 ]

@@ -3,7 +3,7 @@
 Operates on the per-timepoint masters (not raw data). Each timepoint's masters
 are tagged with a `day`; metrics are melted to a tidy long form, joined to the
 baseline day per device, and delta / degradation% are computed. An aggregate
-table gives mean +/- std across devices (per condition) for the average trend.
+table gives mean +/- AVDEV across devices (per condition) for the average trend.
 """
 
 from __future__ import annotations
@@ -50,6 +50,8 @@ def load_timepoint(folder: str, day: object | None = None) -> dict[tuple[str, st
     for cond, _mode, path in find_masters(folder):
         xl = pd.ExcelFile(path)
         for sheet in xl.sheet_names:
+            if sheet.endswith("_groups"):     # diagnostics, not metrics
+                continue
             df = xl.parse(sheet)
             d = day if day is not None else (df["day"].iloc[0] if "day" in df.columns and len(df) else "")
             df["day"] = d
@@ -77,7 +79,8 @@ def compute_tidy(all_long: pd.DataFrame, id_cols: list[str], baseline_num: float
             .rename(columns={"value": "baseline_value"})
             .drop_duplicates(gkey))
     tidy = all_long.merge(base, on=gkey, how="left")
-    tidy["delta"] = tidy["value"] - tidy["baseline_value"]
+    # positive = the metric dropped from baseline (degraded)
+    tidy["delta"] = tidy["baseline_value"] - tidy["value"]
     tidy["degradation_pct"] = tidy["delta"] / tidy["baseline_value"].where(tidy["baseline_value"] != 0) * 100
     return tidy
 
@@ -91,16 +94,22 @@ def filter_devices(tidy: pd.DataFrame, include_devices: set | None) -> pd.DataFr
     return tidy[pd.Series(mask, index=tidy.index)]
 
 
+def _avdev(s: pd.Series) -> float:
+    """Average absolute deviation from the mean (Excel AVEDEV convention)."""
+    m = s.mean()
+    return float((s - m).abs().mean())
+
+
 def aggregate_tidy(tidy: pd.DataFrame, id_cols: list[str],
                    include_devices: set | None = None) -> pd.DataFrame:
-    """Mean +/- std across (included) devices, per condition (+ sub-device structure) per day."""
+    """Mean +/- AVDEV across (included) devices, per condition (+ sub-device structure) per day."""
     tidy = filter_devices(tidy, include_devices)
     struct = [c for c in id_cols if c not in ("ESN", "TNumber")]   # keep Vbg/segment/state
     keys = ([c for c in ["condition"] if c in tidy.columns] + struct + ["metric", "day", "day_num"])
     return (tidy.groupby(keys, dropna=False)
-            .agg(value_mean=("value", "mean"), value_std=("value", "std"),
-                 delta_mean=("delta", "mean"), delta_std=("delta", "std"),
-                 deg_mean=("degradation_pct", "mean"), deg_std=("degradation_pct", "std"),
+            .agg(value_mean=("value", "mean"), value_avdev=("value", _avdev),
+                 delta_mean=("delta", "mean"), delta_avdev=("delta", _avdev),
+                 deg_mean=("degradation_pct", "mean"), deg_avdev=("degradation_pct", _avdev),
                  n=("value", "count"))
             .reset_index()
             .sort_values(keys).reset_index(drop=True))
@@ -119,18 +128,31 @@ def devices_in_folder(folder: str) -> list[tuple[str, str]]:
     return sorted(found, key=lambda p: (len(p[0]), p[0], p[1]))
 
 
+def conditions_in_folder(folder: str) -> list[str]:
+    """Sorted unique condition names present in a timepoint's masters."""
+    return sorted({str(cond) for cond, _mode, _path in find_masters(folder)})
+
+
 def build_degradation(timepoints: list[tuple[object, str]],
                       baseline_day: object | None = None,
-                      include_devices: set | None = None) -> dict[tuple[str, str], tuple[pd.DataFrame, pd.DataFrame]]:
+                      include_devices: set | None = None,
+                      exclude_cond_days: set | None = None,
+                      ) -> dict[tuple[str, str], tuple[pd.DataFrame, pd.DataFrame]]:
     """timepoints: list of (day_label, folder). Returns {(condition, sheet): (tidy, agg)}.
 
-    `include_devices`: set of (ESN, TNumber) to include in the mean/std aggregate
+    `include_devices`: set of (ESN, TNumber) to include in the mean/AVDEV aggregate
     (None = all). The tidy table always keeps every device.
+    `exclude_cond_days`: set of (condition, day_label) to drop entirely from the
+    study -- that condition on that day is left out of every sheet's tidy AND
+    aggregate (so it never reaches a plot). The baseline day must not be here.
     """
+    exclude = {(str(c), str(dl)) for c, dl in (exclude_cond_days or set())}
     per_key: dict[tuple[str, str], list[pd.DataFrame]] = {}
     id_cols_by_key: dict[tuple[str, str], list[str]] = {}
     for day_label, folder in timepoints:
         for (cond, sheet), df in load_timepoint(folder, day=day_label).items():
+            if (str(cond), str(day_label)) in exclude:   # condition-day dropped
+                continue
             long, idc = to_long(df)
             per_key.setdefault((cond, sheet), []).append(long)
             id_cols_by_key[(cond, sheet)] = idc

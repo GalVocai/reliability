@@ -39,6 +39,10 @@ class SEProtocol:
     # Trailing seconds averaged to define a stabilized level within a part.
     window_s: float = 20.0
 
+    # Baseline for the normalized (response %) plot view: mean of the last N
+    # seconds of the FIRST part.
+    norm_window_s: float = 50.0
+
     # Part->phase roles for the 4-part main sensing run (baseline/exposure/
     # settle/recovery). Named here, ONE place; cross-checked against the gas
     # log at runtime so "the order changed" fails loud instead of silent.
@@ -57,6 +61,10 @@ class SEProtocol:
     recovery_pct_max: float = 100.0
     low_baseline_nA: float = 1000.0   # flag very low baseline current (noisy %)
 
+    # Population grouping: a device whose reference response has a robust z
+    # (median/MAD, per condition) beyond this is an outlier_high/outlier_low.
+    group_z_thresh: float = 3.5
+
     # ppm-staircase run (n07): concentration per Part. NOT recorded in the data
     # (the gas log only flags the 1000 ppm step), so the fixed protocol lives
     # here. P0 = air baseline, last 0 = recovery. Edit if the staircase changes.
@@ -67,13 +75,14 @@ class SEProtocol:
 class JGProtocol:
     """JG / JGH sweep parameters."""
 
+    sweep_start_vj: float = -2.8          # a sweep block starts at Vj = -2.8 (the off end)
     sweep_close_vj: float = 0.3          # a sweep block closes when Vj returns to 0.3
     sweep_close_tol: float = 1e-6
     noise_floor_nA: float = 1.0
-    # Constant-current Vth target (all modes). 100 nA sits clearly above the
+    # Constant-current Vth target (all modes). 150 nA sits clearly above the
     # off-noise (which swings up to ~60-120 nA) yet still catches the abrupt
     # turn-on. Paired with an onset guard so noise spikes can't trigger it.
-    vth_target_nA: float = 100.0
+    vth_target_nA: float = 150.0
     vth_onset_guard: int = 3             # crossing must stay above target for N points
     relevant_rep_is_last: bool = True    # of the 3 JG reps, the last Part is used
 
@@ -90,6 +99,12 @@ class JGProtocol:
     h2_part: int = 2                      # only part 2 (last rep) is used
     # max-response is searched from the air turn-on onset rightward (the onset is
     # detected per-curve from its own off-noise), so there is no fixed nA floor.
+
+    # JGH hysteresis: back-gates present in the raw sweep that carry no
+    # analytical interest for this mode -- excluded from the JGH master (and
+    # therefore from its degradation trends). Independent of the plotting
+    # style's show_vbg (which only hides curves in the per-device figure).
+    jgh_skip_bg: tuple[float, ...] = (-4.0, 2.0)
 
 
 @dataclass(frozen=True)

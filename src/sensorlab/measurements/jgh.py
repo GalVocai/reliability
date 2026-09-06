@@ -14,7 +14,7 @@ import pandas as pd
 from ..io.device_map import ConditionCache
 from ..model import Run
 from ..protocol import DEFAULT, Protocol
-from .jg import _clean_curve, _vth_constant_current
+from .jg import _clean_curve, _vth_constant_current, back_gate_groups
 
 
 def split_forward_reverse(vj: np.ndarray, idv: np.ndarray):
@@ -34,7 +34,7 @@ def _loop_area_and_hi(vf: np.ndarray, if_: np.ndarray, vr: np.ndarray, ir: np.nd
     if xg.size < 2:
         return float("nan"), float("nan")
     yb = np.interp(xg, vr, ir)
-    _trapz = getattr(np, "trapezoid", np.trapz)   # numpy>=2 renamed trapz
+    _trapz = getattr(np, "trapezoid", None) or np.trapz   # numpy>=2 renamed trapz
     area = float(_trapz(np.abs(yf - yb), xg))
     den = float(_trapz(np.maximum(yf, yb), xg))
     hi = area / den if abs(den) > 1e-30 else float("nan")
@@ -67,7 +67,15 @@ def _jgh_flags(m: dict[str, float]) -> str:
     flags: list[str] = []
     if pd.isna(m["Vth_FWD"]) or pd.isna(m["Vth_BWD"]):
         flags.append("vth_undefined")
-    return ";".join(flags)
+    # 'ok' (not '') so the master cell isn't blank -> NaN when read back
+    return ";".join(flags) or "ok"
+
+
+# The JGH master reports only what this mode uniquely measures: hysteresis.
+# Vth_FWD/BWD and Ion are computed internally (Delta_Vth, flags, plots need
+# them) but belong to the JG mode's master -- reporting them here would just
+# duplicate generic JG analyses inside JGH.
+_REPORTED = ("Delta_Vth", "loop_area", "HI")
 
 
 def analyze_jgh_run(
@@ -76,7 +84,8 @@ def analyze_jgh_run(
     protocol: Protocol = DEFAULT,
 ) -> pd.DataFrame:
     data = run.parts()[sorted(run.parts())[0]]   # JGH is a single part
-    back_gates = sorted(int(v) for v in data["Vb"].dropna().unique())
+    skip = {float(v) for v in protocol.jg.jgh_skip_bg}
+    gate_groups = [(vb, sub) for vb, sub in back_gate_groups(data) if float(vb) not in skip]
 
     rows: list[dict[str, object]] = []
     for ch in run.channels:
@@ -85,11 +94,10 @@ def analyze_jgh_run(
             "TNumber": ch.tnumber,
             "condition": conditions.get(ch.esn) if conditions else "",
         }
-        for vb in back_gates:
-            sub = data[data["Vb"] == vb]
+        for vb, sub in gate_groups:
             m = jgh_curve_metrics(sub["Vj"].to_numpy(float), sub[ch.column].to_numpy(float), protocol)
-            for k, v in m.items():
-                row[f"{k}_bg{vb}"] = v
+            for k in _REPORTED:
+                row[f"{k}_bg{vb}"] = m[k]
             row[f"flags_bg{vb}"] = _jgh_flags(m)
         rows.append(row)
 

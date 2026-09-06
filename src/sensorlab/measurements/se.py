@@ -68,6 +68,44 @@ def _safe_pct(num: float, den: float) -> float:
     return num / den * 100.0
 
 
+def _t90(part_df: pd.DataFrame, col: str, window_s: float, mad_k: float,
+         guard: int = 3, y0: float | None = None) -> float:
+    """Seconds from the part start (= the gas switch) until the signal first
+    *sustainably* reaches 90% of the step it makes in this part.
+
+    `y0` anchors the step: pass the PREVIOUS part's stabilized level so the
+    90% mark is measured on the physical step (previous phase -> this phase's
+    stabilized end level), not on whatever the first samples of this part
+    happen to read (a fast device is already moving by then). When `y0` is
+    omitted/NaN (no previous part) it falls back to the median of the first
+    5 samples.
+
+    Direction-agnostic (works for rise and decay). The guard requires the next
+    `guard` samples to stay past the 90% mark so a spike can't fake arrival.
+    """
+    s = part_df[["Time", col]].dropna().sort_values("Time")
+    if len(s) < guard + 2:
+        return float("nan")
+    t = s["Time"].to_numpy(float)
+    y = s[col].to_numpy(float)
+    if y0 is None or pd.isna(y0):
+        y0 = float(np.median(y[: min(5, y.size)]))
+    yf = _trailing_level(part_df, col, window_s, mad_k)
+    if pd.isna(yf) or yf == y0:
+        return float("nan")
+    target = y0 + 0.9 * (yf - y0)
+    rising = yf > y0
+    n = y.size
+    for i in range(n):
+        arrived = y[i] >= target if rising else y[i] <= target
+        if arrived:
+            end = min(i + max(guard, 1), n)
+            ok = all((y[j] >= target if rising else y[j] <= target) for j in range(i, end))
+            if ok:
+                return float(t[i] - t[0])
+    return float("nan")
+
+
 def device_part_levels(run: Run, protocol: Protocol = DEFAULT) -> dict[str, dict[int, float]]:
     """Per device -> {part: stabilized level}."""
     p = protocol.se
@@ -87,8 +125,9 @@ def is_main_sensing(run: Run, protocol: Protocol = DEFAULT) -> bool:
 
 
 def _se_flags(run: Run, col: str, baseline: float, response: float,
-              recovery_pct: float, protocol: Protocol) -> str:
-    """Quality flags for one device (semicolon-separated; '' if clean)."""
+              recovery_pct: float, protocol: Protocol,
+              t90s: tuple[float, ...] = ()) -> str:
+    """Quality flags for one device (semicolon-separated; 'ok' if clean)."""
     p = protocol.se
     flags: list[str] = []
     span = response - baseline
@@ -99,7 +138,10 @@ def _se_flags(run: Run, col: str, baseline: float, response: float,
         flags.append("recovery_out_of_range")
     if abs(baseline) < p.low_baseline_nA:
         flags.append("low_baseline")
-    return ";".join(flags)
+    if any(pd.isna(t) for t in t90s):
+        flags.append("t90_not_reached")
+    # 'ok' (not '') so the master cell isn't blank -> NaN when read back
+    return ";".join(flags) or "ok"
 
 
 def analyze_se_run(
@@ -128,24 +170,36 @@ def analyze_se_run(
             recovery = lv[p.recovery_part]
             shift = response - settle                       # correct settle onto response
             recovery_pct = _safe_pct((settle + shift) - (recovery + shift), (settle + shift) - baseline)
+            # t90 anchored on the PREVIOUS phase's stabilized level: response
+            # vs the air baseline; recovery vs the settle level (both raw --
+            # the post-sweep capacitive shift is common to settle and recovery
+            # so it cancels out of the 90% geometry).
+            t90_resp = _t90(run.parts()[p.response_part], ch.column, p.window_s,
+                            p.outlier_mad_k, y0=baseline)
+            t90_rec = _t90(run.parts()[p.recovery_part], ch.column, p.window_s,
+                           p.outlier_mad_k, y0=settle)
             row.update(
                 baseline=baseline,
                 response=response,
+                response_delta=response - baseline,          # nA, comparable across devices
                 response_pct=_safe_pct(response - baseline, baseline),
+                t90_response_s=t90_resp,
                 settle_raw=settle,
                 shift=shift,
                 settle_corr=settle + shift,                 # == response by construction
                 recovery_raw=recovery,
                 recovery_corr=recovery + shift,
+                recovery_delta=(recovery + shift) - baseline,   # corrected residual vs baseline, nA
                 recovery_pct=recovery_pct,
-                flags=_se_flags(run, ch.column, baseline, response, recovery_pct, protocol),
+                t90_recovery_s=t90_rec,
+                flags=_se_flags(run, ch.column, baseline, response, recovery_pct, protocol,
+                                t90s=(t90_resp, t90_rec)),
             )
         else:
-            # fallback: generic per-part levels + response vs baseline
+            # fallback: generic per-part deltas + response % vs the first part
             base = lv.get(part_ids[0]) if part_ids else float("nan")
-            for k in part_ids:
-                row[f"P{k}_level"] = lv[k]
             for k in part_ids[1:]:
+                row[f"P{k}_delta"] = lv[k] - base
                 row[f"P{k}_response_pct"] = _safe_pct(lv[k] - base, base)
         rows.append(row)
 

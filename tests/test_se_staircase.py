@@ -27,3 +27,9 @@ def test_staircase_response_per_step():
     assert r["100ppm_resp_pct"] == 100.0
     assert r["1000ppm_resp_pct"] == 200.0
     assert r["recovery_pct"] == 20.0
+    # deltas vs the air baseline (nA) -- comparable across devices
+    assert r["10ppm_delta"] == 10.0
+    assert r["100ppm_delta"] == 100.0
+    assert r["1000ppm_delta"] == 200.0
+    assert r["recovery_delta"] == 20.0
+    assert "10ppm_level" not in r.index

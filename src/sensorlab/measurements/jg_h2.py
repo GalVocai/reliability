@@ -2,7 +2,7 @@
 
 Compares the part-2 transfer sweep in air (n03) against H2 (n05) and recovery
 (n06), per back-gate. Per device per Vbg:
-  * delta_Vth  = Vth(air) - Vth(gas)                         [V(100nA,air) - V(100nA,gas)]
+  * delta_Vth  = Vth(air) - Vth(gas)     [V(vth_target_nA,air) - V(vth_target_nA,gas)]
   * resp_at_Vth = (I_gas - I_air)/I_air * 100  at the air Vth
   * max_resp   = max over Vj of (I_gas - I_air)/I_air * 100, and the Vj where it occurs
 """
@@ -15,7 +15,7 @@ import pandas as pd
 from ..io.device_map import ConditionCache
 from ..model import Run
 from ..protocol import DEFAULT, Protocol
-from .jg import _clean_curve, _vth_constant_current
+from .jg import _clean_curve, _vth_constant_current, back_gate_groups
 
 
 def _interp_at(vj: np.ndarray, idv: np.ndarray, x: float) -> float:
@@ -86,7 +86,7 @@ def compare_condition(air, gas, protocol: Protocol = DEFAULT) -> dict[str, float
 
 def _part2_by_vb(run: Run, protocol: Protocol):
     data = run.parts()[protocol.jg.h2_part]
-    return data, sorted(int(v) for v in data["Vb"].dropna().unique())
+    return data, [vb for vb, _sub in back_gate_groups(data)]
 
 
 def analyze_jg_h2(jg_runs: list[Run], conditions: ConditionCache | None = None,
@@ -105,7 +105,8 @@ def analyze_jg_h2(jg_runs: list[Run], conditions: ConditionCache | None = None,
     rec_data = _part2_by_vb(rec, protocol)[0] if rec is not None else None
 
     def curve(data, col, vb):
-        sub = data[data["Vb"] == vb]
+        # rounded match pairs with back_gate_groups (tolerates recorded noise)
+        sub = data[data["Vb"].round(2) == round(float(vb), 2)]
         return _clean_curve(sub["Vj"].to_numpy(float), sub[col].to_numpy(float))
 
     rows: list[dict[str, object]] = []

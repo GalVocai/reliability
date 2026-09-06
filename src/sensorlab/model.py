@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 import pandas as pd
@@ -52,14 +52,25 @@ class Run:
     data: pd.DataFrame               # Time, Part, Vb, Vj, ... Id00..IdNN
     channels: list[Channel]
     description: dict[str, object]   # raw Description key/value
+    # per-channel working points from the script's States sheet:
+    # {channel index: {"State1": (Vj, Vb), "State2": (Vj, Vb)}}
+    states: dict | None = None
+    _parts_cache: dict | None = field(default=None, repr=False, compare=False)
 
     @property
     def device_columns(self) -> list[str]:
         return [c.column for c in self.channels]
 
     def parts(self) -> dict[int, pd.DataFrame]:
-        """Split Data by the explicit ``Part`` column (the 'minor' index)."""
-        return {int(p): g.reset_index(drop=True) for p, g in self.data.groupby("Part")}
+        """Split Data by the explicit ``Part`` column (the 'minor' index).
+
+        Cached: the data never changes after load, and the analyzers/plotters
+        call this per channel — without the cache the full groupby re-ran
+        dozens of times per run. Callers must treat the frames as read-only.
+        """
+        if self._parts_cache is None:
+            self._parts_cache = {int(p): g.reset_index(drop=True) for p, g in self.data.groupby("Part")}
+        return self._parts_cache
 
 
 def device_columns_of(df: pd.DataFrame) -> list[str]:

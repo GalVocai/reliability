@@ -149,6 +149,23 @@ def fit_device(run: Run, col: str) -> list[dict[str, Any]]:
     return out
 
 
+def segment_lin_slope(seg: dict[str, Any]) -> dict[str, float]:
+    """Straight line between the mean of the first 4 and last 4 points.
+
+    Returns the slope [nA/s] plus the two anchor points (for drawing the line
+    on the plot). One slope per segment -> 2 rise + 2 decay per 4-part cycle.
+    """
+    t, y = seg["time_abs"], seg["current"]
+    nan = {"slope": np.nan, "t0": np.nan, "y0": np.nan, "t1": np.nan, "y1": np.nan}
+    if t.size < 8:
+        return nan
+    t0, y0 = float(np.mean(t[:4])), float(np.mean(y[:4]))
+    t1, y1 = float(np.mean(t[-4:])), float(np.mean(y[-4:]))
+    if t1 == t0:
+        return nan
+    return {"slope": (y1 - y0) / (t1 - t0), "t0": t0, "y0": y0, "t1": t1, "y1": y1}
+
+
 def _single_exp(t, dc, a, tau):
     return dc + a * np.exp(-t / tau)
 
@@ -177,11 +194,13 @@ def analyze_zozo_run(run: Run, conditions: ConditionCache | None = None,
     for ch in run.channels:
         for seg in build_segments(run, ch.column):
             f = fit_segment_single(seg)
+            lin = segment_lin_slope(seg)
             rows.append({
                 "ESN": ch.esn, "TNumber": ch.tnumber,
                 "condition": conditions.get(ch.esn) if conditions else "",
                 "state_Vj": seg["Vj"], "segment": seg["part"], "n_points": int(seg["current"].size),
                 "level": f["level"], "A": f["A"], "tau": f["tau"], "R2": f["R2"],
+                "lin_slope": lin["slope"],
             })
     df = pd.DataFrame(rows)
     return df.sort_values(["ESN", "TNumber", "state_Vj", "segment"]).reset_index(drop=True)

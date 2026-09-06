@@ -5,15 +5,44 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+# DC-shift anchor: the curve minimum is searched only after this many seconds,
+# so a start-of-measurement transient can't drag the shifted trace upward.
+DC_SHIFT_SKIP_S = 550.0
 
-def positive_despiked(x, y, win: int = 5, log_thresh: float = 0.7):
-    """For log plots: keep only Id > 0 and drop isolated spikes.
 
-    A point is a spike if its log10(Id) deviates from the local rolling median
-    by more than `log_thresh` decades.
+def stable_min(x, y, skip_s: float = DC_SHIFT_SKIP_S) -> float:
+    """Minimum of `y`, ignoring the first `skip_s` seconds of `x`.
+
+    Falls back to the full-curve minimum when the trace is shorter than the
+    skip window. NaN for an empty/all-NaN trace.
     """
     x = np.asarray(x, float)
     y = np.asarray(y, float)
+    if y.size == 0 or np.all(np.isnan(y)):
+        return float("nan")
+    m = x >= x[0] + skip_s
+    win = y[m]
+    if win.size == 0 or np.all(np.isnan(win)):
+        win = y
+    return float(np.nanmin(win))
+
+
+def abs_despiked(x, y, win: int = 5, log_thresh: float = 0.7):
+    """For log plots: plot |Id| and drop isolated spikes.
+
+    The off-region current swings through zero (it is noise around 0), and a
+    log axis cannot show negatives. Taking |Id| keeps those samples as their
+    magnitude instead of discarding them, so the off-region noise floor stays
+    visible rather than leaving a gap. Exact zeros are still dropped -- log10(0)
+    is undefined.
+
+    A point is a spike if its log10|Id| deviates from the local rolling median
+    by more than `log_thresh` decades. Note this still removes samples that sit
+    very near zero: |Id| there plunges many decades and would otherwise stretch
+    the log axis toward -inf.
+    """
+    x = np.asarray(x, float)
+    y = np.abs(np.asarray(y, float))
     m = np.isfinite(x) & np.isfinite(y) & (y > 0)
     x, y = x[m], y[m]
     if len(y) < max(win, 3):

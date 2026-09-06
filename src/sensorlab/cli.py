@@ -22,8 +22,9 @@ def main(argv: list[str] | None = None) -> int:
     from .pipeline import analyze_folder
     written = analyze_folder(args.folder, make_plots=not args.no_plots, day=args.day, log=print)
     print("Masters written:")
-    for kind, path in written.items():
-        print(f"  {kind}: {path}")
+    for kind, paths in written.items():
+        for path in paths:
+            print(f"  {kind}: {path}")
     return 0
 
 
