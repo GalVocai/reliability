@@ -118,7 +118,7 @@ def test_duplicate_condition_is_rejected(tmp_path: Path) -> None:
         discover_degradation_sources([first, second])
 
 
-def test_build_complete_results_outline(tmp_path: Path) -> None:
+def test_build_complete_results_outline(tmp_path: Path, monkeypatch) -> None:
     outline = tmp_path / "Results outline.docx"
     output = tmp_path / "Results outline - SensorLab.docx"
     supplement = tmp_path / "sensorlab-output"
@@ -129,6 +129,10 @@ def test_build_complete_results_outline(tmp_path: Path) -> None:
     _make_condition(normal, "Hot storage", "ESN1216_D1T1")
     _make_condition(normal, "85C_85RH", "ESN1259_D1T2")
     _make_condition(cycle_root, "cycles", "ESN1270_D1T2")
+    monkeypatch.setattr(
+        "sensorlab.report_builder.generate_overview_plots",
+        lambda _conditions, _output: (),
+    )
 
     result = build_results_report(
         outline,
@@ -147,13 +151,14 @@ def test_build_complete_results_outline(tmp_path: Path) -> None:
     assert len(built.inline_shapes) == 54
     assert result.images_added == 54
     assert result.missing_images == ()
+    assert result.overview_generated == ()
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert manifest["conditions"]["cycles"]["representative_device"] == "ESN1270_D1T2"
     assert manifest["images_added"] == 54
     assert manifest["missing_images"] == []
 
 
-def test_missing_report_plots_become_manifested_placeholders(tmp_path: Path) -> None:
+def test_missing_report_plots_become_manifested_placeholders(tmp_path: Path, monkeypatch) -> None:
     outline = tmp_path / "outline.docx"
     output = tmp_path / "output.docx"
     supplement = tmp_path / "supplement"
@@ -164,6 +169,10 @@ def test_missing_report_plots_become_manifested_placeholders(tmp_path: Path) -> 
     _make_condition(normal, "Hot storage", "ESN1_D1T1", complete=False)
     _make_condition(normal, "85C_85RH", "ESN2_D1T1", complete=False)
     _make_condition(cycles, "cycles", "ESN3_D1T1", complete=False)
+    monkeypatch.setattr(
+        "sensorlab.report_builder.generate_overview_plots",
+        lambda _conditions, _output: (),
+    )
 
     result = build_results_report(outline, [normal, cycles], supplement, output)
 

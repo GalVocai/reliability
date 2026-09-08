@@ -88,13 +88,16 @@ The GUI's **Results report** window builds a graph-populated Word document
 directly from SensorLab outputs; PowerPoint is not involved. Select the clean
 `Results outline.docx`, add one or more degradation roots, choose a
 representative device for each detected condition, and select the SensorLab
-`output` folder that contains the six cross-test publication plots.
+`output` folder where the cross-test publication plots should be written.
 
 Multiple roots are intentional: the normal reliability degradation root may
 contain `Hot storage` and `85C_85RH`, while a second root contains `cycles`.
-The builder merges these condition folders logically and records every chosen
-image in a JSON manifest beside the generated DOCX. It never overwrites the
-clean outline without an explicit confirmation.
+The builder merges these condition folders logically and regenerates the
+cross-test regular/normalized figures from their saved population aggregates
+on every build. This keeps newly added checkpoints (for example Cycles 21D /
+252 cycles) synchronized with the report. It records every chosen image in a
+JSON manifest beside the generated DOCX and never overwrites the clean outline
+without an explicit confirmation.
 
 New degradation runs also generate report-ready JG curves aligned to the
 baseline threshold and JG-H2 overlays for the baseline and final checkpoint.

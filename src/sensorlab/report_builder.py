@@ -22,6 +22,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 
+from .plotting.overview_plot import generate_overview_plots
+
 
 _MODE_DIRS = {"JG_n03", "JG_H2", "SE_n04", "STEPS_n07"}
 _DEVICE_RE = re.compile(r"^(ESN.+?)(?:_Vbg-?\d+(?:\.\d+)?)?$")
@@ -62,6 +64,7 @@ class ReportBuildResult:
     manifest_path: Path
     images_added: int
     missing_images: tuple[ReportImage, ...]
+    overview_generated: tuple[Path, ...]
 
 
 _CONDITION_META = {
@@ -509,6 +512,9 @@ def build_results_report(
     if end_anchor.text.strip():
         end_anchor = document.add_paragraph()
 
+    overview_generated = generate_overview_plots(
+        {key: sources[key].directory for key in _REPORT_ORDER}, supplemental_root
+    )
     overview = overview_panel(supplemental_root)
     panels_by_condition = {
         key: condition_panels(sources[key], devices[key]) for key in _REPORT_ORDER
@@ -543,6 +549,7 @@ def build_results_report(
         "output": str(output),
         "degradation_roots": [str(root) for root in roots],
         "supplemental_root": str(Path(supplemental_root).expanduser().resolve()),
+        "overview_generated": [str(path) for path in overview_generated],
         "overview": _manifest_panel(overview),
         "conditions": {
             key: {
@@ -560,4 +567,6 @@ def build_results_report(
         ],
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
-    return ReportBuildResult(output, manifest_path, images_added, tuple(missing_images))
+    return ReportBuildResult(
+        output, manifest_path, images_added, tuple(missing_images), overview_generated
+    )

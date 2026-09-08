@@ -697,7 +697,7 @@ class ResultsReportWindow(tk.Toplevel):
         self.output_var = tk.StringVar()
         self._file_row(files, 0, "Clean outline:", self.outline_var,
                        "Select…", self._pick_outline)
-        self._file_row(files, 1, "Supplemental plots:", self.supplemental_var,
+        self._file_row(files, 1, "Overview output folder:", self.supplemental_var,
                        "Select…", self._pick_supplemental)
         self._file_row(files, 2, "Output document:", self.output_var,
                        "Select…", self._pick_output)
@@ -726,7 +726,8 @@ class ResultsReportWindow(tk.Toplevel):
         note.pack(fill="x", pady=(0, 10))
         ttk.Label(
             note,
-            text=("Missing specialized plots are shown as explicit placeholders and listed in the manifest. "
+            text=("Cross-test overview plots are regenerated from the selected degradation tables. "
+                  "Missing specialized plots are shown as explicit placeholders and listed in the manifest. "
                   "The clean outline is never overwritten."),
             style="Muted.TLabel",
             wraplength=900,
@@ -788,7 +789,7 @@ class ResultsReportWindow(tk.Toplevel):
         self._sync_build_state()
 
     def _pick_supplemental(self) -> None:
-        path = filedialog.askdirectory(title="Select SensorLab output / publication plots folder")
+        path = filedialog.askdirectory(title="Select the SensorLab overview output folder")
         if path:
             self.supplemental_var.set(path)
             self._sync_build_state()
@@ -929,6 +930,8 @@ class ResultsReportWindow(tk.Toplevel):
                     assert isinstance(result, ReportBuildResult)
                     self._log_report(f"Report written: {result.output_path}")
                     self._log_report(f"Manifest written: {result.manifest_path}")
+                    self._log_report(
+                        f"Overview plots regenerated: {len(result.overview_generated)}")
                     self._log_report(
                         f"Images added: {result.images_added}; missing: {len(result.missing_images)}")
                     self.build_btn.config(state="normal")
