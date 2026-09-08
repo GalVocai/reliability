@@ -13,6 +13,7 @@ try {
         --onefile `
         --windowed `
         --name SensorLab `
+        --hidden-import matplotlib.backends.backend_pdf `
         --workpath $buildWork `
         --paths "$projectRoot\src" `
         "$projectRoot\sensorlab_gui.py"
