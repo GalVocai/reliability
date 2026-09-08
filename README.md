@@ -42,6 +42,7 @@ src/sensorlab/
   plotting/       # per-device plots + shared style config
   degradation.py  # cross-timepoint tidy tables (delta / degradation%)
   compare.py      # degradation study orchestration + trend plots
+  report_builder.py # direct degradation-output -> Results Outline DOCX
   cli.py gui.py   # thin frontends
 tests/
   fixtures/       # legacy raw + *_analyzed.xlsx = regression ground truth
@@ -80,6 +81,25 @@ cycle_num = day_num * 24 / hours_per_cycle
 The day columns are preserved in the exported workbooks and an estimated
 `cycle_num` column is added. With the default 2-hour cycle, 2D, 7D, and 13D
 are displayed as cycles 24, 84, and 156 respectively.
+
+## Results Outline report
+
+The GUI's **Results report** window builds a graph-populated Word document
+directly from SensorLab outputs; PowerPoint is not involved. Select the clean
+`Results outline.docx`, add one or more degradation roots, choose a
+representative device for each detected condition, and select the SensorLab
+`output` folder that contains the six cross-test publication plots.
+
+Multiple roots are intentional: the normal reliability degradation root may
+contain `Hot storage` and `85C_85RH`, while a second root contains `cycles`.
+The builder merges these condition folders logically and records every chosen
+image in a JSON manifest beside the generated DOCX. It never overwrites the
+clean outline without an explicit confirmation.
+
+New degradation runs also generate report-ready JG curves aligned to the
+baseline threshold and JG-H2 overlays for the baseline and final checkpoint.
+Older degradation folders that predate these plots are still accepted; the
+DOCX receives visible placeholders and the manifest lists every missing file.
 
 ## Status
 

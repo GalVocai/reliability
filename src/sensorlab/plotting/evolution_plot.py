@@ -13,10 +13,12 @@ import matplotlib.pyplot as plt
 
 import numpy as np
 
+from ..measurements.jg import _clean_curve, _vth_constant_current
 from ..plotting._clean import abs_despiked
 from ..plotting._labels import X_TIME, X_VJ, Y_ID
 from ..plotting.style import load_style
 from ..plotting.trend_plot import _savefig, day_legend_label, time_legend_title
+from ..protocol import DEFAULT
 
 
 _DAY_CMAP = "Greens"
@@ -95,6 +97,73 @@ def plot_jg_sweep_evolution(device_curves: list[dict], out_path: str, title: str
     ax.set_title(title)
     style.apply_publication(ax)
     style.apply_legend(ax, handles=day_handles, title=time_legend_title(time_axis),
+                       fontsize=8, loc="upper left")
+    fig.tight_layout()
+    _savefig(fig, out_path, dpi=style.dpi)
+    return out_path
+
+
+def plot_jg_sweep_collapse(device_curves: list[dict], out_path: str, title: str,
+                           xlim: tuple[float, float] | None = None,
+                           time_axis: str = "days",
+                           hours_per_cycle: float = 2.0,
+                           linewidth: float = 2.5,
+                           plot_mode: str = "line") -> str:
+    """Horizontally align each JG curve to the earliest curve's Vth.
+
+    Vth is extracted at the protocol's constant-current threshold from the raw
+    rising sweep.  Only the voltage coordinate is shifted; current values and
+    curve shape are left untouched.  If a crossing is unavailable, that curve
+    is shown unshifted rather than silently discarded.
+    """
+
+    fig, ax = plt.subplots(figsize=(8.5, 5.5))
+    style = load_style()
+    curves = sorted(device_curves, key=lambda c: float(c["day_num"]))
+    days = sorted({float(c["day_num"]) for c in curves})
+    day_style = _day_style(days, style)
+    target = DEFAULT.jg.vth_target_nA
+    guard = DEFAULT.jg.vth_onset_guard
+
+    vths: dict[int, float] = {}
+    for index, curve in enumerate(curves):
+        vj, ids = _clean_curve(np.asarray(curve["vj"], dtype=float),
+                               np.asarray(curve["id"], dtype=float))
+        vths[index] = _vth_constant_current(vj, ids, target, guard)
+    baseline_vth = next((vths[i] for i in range(len(curves)) if np.isfinite(vths[i])), float("nan"))
+
+    for index, curve in enumerate(curves):
+        vj = np.asarray(curve["vj"], dtype=float)
+        ids = np.asarray(curve["id"], dtype=float)
+        shift = vths[index] - baseline_vth
+        aligned_vj = vj - shift if np.isfinite(shift) else vj
+        x, y = abs_despiked(aligned_vj, ids)
+        if x.size == 0:
+            continue
+        day = float(curve["day_num"])
+        color = day_style[day][0]
+        if _scatter(plot_mode):
+            ax.scatter(x, y, color=color, s=_RAW_SCATTER_SIZE, marker="o", zorder=2)
+        else:
+            ax.plot(x, y, color=color, lw=linewidth, zorder=2)
+
+    if _scatter(plot_mode):
+        handles = [plt.Line2D([], [], color=day_style[d][0], linestyle="none",
+                              marker="o", markersize=_RAW_MARKER_SIZE_PT,
+                              label=day_legend_label(d, time_axis, hours_per_cycle))
+                   for d in days]
+    else:
+        handles = [plt.Line2D([0], [0], color=day_style[d][0], lw=linewidth,
+                              label=day_legend_label(d, time_axis, hours_per_cycle))
+                   for d in days]
+    style.apply_axes(ax, "JG", default_log=True)
+    if xlim is not None:
+        ax.set_xlim(*xlim)
+    ax.set_xlabel(X_VJ)
+    ax.set_ylabel(Y_ID)
+    ax.set_title(title)
+    style.apply_publication(ax)
+    style.apply_legend(ax, handles=handles, title=time_legend_title(time_axis),
                        fontsize=8, loc="upper left")
     fig.tight_layout()
     _savefig(fig, out_path, dpi=style.dpi)

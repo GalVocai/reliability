@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import os
 import math
+from pathlib import Path
 import queue
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -31,6 +33,9 @@ from .plotting import (
     render_steps, render_steps_stack, render_zozo, render_zozo_stack,
 )
 from .protocol import DEFAULT as PROTO
+from .report_builder import (ConditionSource, ReportBuildResult,
+                             available_report_devices, build_results_report,
+                             discover_degradation_sources)
 
 # --- palette / fonts ---------------------------------------------------------
 BG = "#eef0f3"
@@ -141,6 +146,8 @@ class SensorLabApp(tk.Tk):
                    command=lambda: DegradationWindow(self)).pack(side="left", padx=10)
         ttk.Button(actions, text="Plot studio…",
                    command=lambda: PlotStudio(self, self.folder)).pack(side="left")
+        ttk.Button(actions, text="Results report…",
+                   command=lambda: ResultsReportWindow(self)).pack(side="left", padx=(10, 0))
 
         # log
         f4 = ttk.LabelFrame(body, text="  Log  ", padding=6)
@@ -646,6 +653,308 @@ class DegradationWindow(tk.Toplevel):
         self.after(100, self._drain)
 
     def _log(self, text: str) -> None:
+        self.log.config(state="normal")
+        self.log.insert("end", text + "\n")
+        self.log.see("end")
+        self.log.config(state="disabled")
+
+
+def _sensorlab_project_root() -> Path:
+    """Project root for both a source checkout and the one-file executable."""
+
+    if getattr(sys, "frozen", False):
+        # dist/SensorLab.exe -> sensorlab project root
+        return Path(sys.executable).resolve().parent.parent
+    # src/sensorlab/gui.py -> sensorlab project root
+    return Path(__file__).resolve().parents[2]
+
+
+class ResultsReportWindow(tk.Toplevel):
+    """Build the thesis Results Outline from one or more degradation roots."""
+
+    _ORDER = ("hot_storage", "85c_85rh", "cycles")
+
+    def __init__(self, master: tk.Tk) -> None:
+        super().__init__(master)
+        self.title("sensorlab — results report")
+        self.geometry("980x800")
+        self.minsize(820, 650)
+        self.configure(bg=BG)
+        self.degradation_roots: list[Path] = []
+        self.sources: dict[str, ConditionSource] = {}
+        self.device_vars: dict[str, tk.StringVar] = {}
+        self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
+
+        _header(self, "Results report", "Build the Results Outline directly from SensorLab outputs")
+        body = ttk.Frame(self, padding=12)
+        body.pack(fill="both", expand=True)
+
+        files = ttk.LabelFrame(body, text="  Documents and supplemental plots  ", padding=10)
+        files.pack(fill="x", pady=(0, 10))
+        files.columnconfigure(1, weight=1)
+        self.outline_var = tk.StringVar()
+        self.supplemental_var = tk.StringVar()
+        self.output_var = tk.StringVar()
+        self._file_row(files, 0, "Clean outline:", self.outline_var,
+                       "Select…", self._pick_outline)
+        self._file_row(files, 1, "Supplemental plots:", self.supplemental_var,
+                       "Select…", self._pick_supplemental)
+        self._file_row(files, 2, "Output document:", self.output_var,
+                       "Select…", self._pick_output)
+
+        roots_box = ttk.LabelFrame(body, text="  Degradation sources  ", padding=10)
+        roots_box.pack(fill="x", pady=(0, 10))
+        root_buttons = ttk.Frame(roots_box)
+        root_buttons.pack(fill="x", pady=(0, 6))
+        ttk.Button(root_buttons, text="Add degradation folder…",
+                   command=self._add_root).pack(side="left")
+        ttk.Button(root_buttons, text="Remove selected",
+                   command=self._remove_root).pack(side="left", padx=6)
+        ttk.Label(root_buttons,
+                  text="Add both the Hot Storage/85-85 root and the Cycles root.",
+                  style="Muted.TLabel").pack(side="left", padx=8)
+        self.root_list = tk.Listbox(roots_box, height=3, exportselection=False,
+                                    background="white", relief="solid", borderwidth=1)
+        self.root_list.pack(fill="x")
+
+        conditions = ttk.LabelFrame(body, text="  Detected conditions and representative devices  ", padding=10)
+        conditions.pack(fill="x", pady=(0, 10))
+        self.conditions_frame = ttk.Frame(conditions)
+        self.conditions_frame.pack(fill="x")
+
+        note = ttk.LabelFrame(body, text="  Build policy  ", padding=8)
+        note.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            note,
+            text=("Missing specialized plots are shown as explicit placeholders and listed in the manifest. "
+                  "The clean outline is never overwritten."),
+            style="Muted.TLabel",
+            wraplength=900,
+        ).pack(anchor="w")
+
+        actions = ttk.Frame(body)
+        actions.pack(fill="x", pady=(0, 10))
+        self.build_btn = ttk.Button(actions, text="▶  Build results report",
+                                    style="Accent.TButton", command=self._run,
+                                    state="disabled")
+        self.build_btn.pack(side="left")
+        ttk.Button(actions, text="Open output folder",
+                   command=self._open_output_folder).pack(side="left", padx=8)
+
+        log_box = ttk.LabelFrame(body, text="  Log  ", padding=6)
+        log_box.pack(fill="both", expand=True)
+        self.log = _make_log(log_box)
+        self.log.pack(fill="both", expand=True)
+
+        self._load_defaults()
+        self.after(100, self._drain_report_queue)
+
+    def _file_row(self, parent: tk.Misc, row: int, label: str,
+                  variable: tk.StringVar, button: str, command) -> None:
+        ttk.Label(parent, text=label, width=20).grid(row=row, column=0, sticky="w", pady=3)
+        ttk.Entry(parent, textvariable=variable).grid(
+            row=row, column=1, sticky="ew", padx=(4, 8), pady=3)
+        ttk.Button(parent, text=button, command=command).grid(row=row, column=2, pady=3)
+
+    def _load_defaults(self) -> None:
+        project = _sensorlab_project_root()
+        self.supplemental_var.set(str(project / "output"))
+        reliability_data = project.parent / "reliability"
+        outline = reliability_data / "Thesis" / "Results outline.docx"
+        if outline.is_file():
+            self.outline_var.set(str(outline))
+            self.output_var.set(str(outline.with_name("Results outline - SensorLab.docx")))
+        for candidate in (
+            reliability_data / "degradation",
+            reliability_data / "cycles" / "degradation",
+        ):
+            if candidate.is_dir():
+                self.degradation_roots.append(candidate.resolve())
+        self._sync_root_list()
+        self._refresh_sources(show_error=False)
+
+    def _pick_outline(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select the clean Results outline",
+            filetypes=[("Word document", "*.docx"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        self.outline_var.set(path)
+        current_output = self.output_var.get().strip()
+        if not current_output or Path(current_output).name == "Results outline - SensorLab.docx":
+            source = Path(path)
+            self.output_var.set(str(source.with_name(source.stem + " - SensorLab.docx")))
+        self._sync_build_state()
+
+    def _pick_supplemental(self) -> None:
+        path = filedialog.askdirectory(title="Select SensorLab output / publication plots folder")
+        if path:
+            self.supplemental_var.set(path)
+            self._sync_build_state()
+
+    def _pick_output(self) -> None:
+        initial = self.output_var.get().strip()
+        path = filedialog.asksaveasfilename(
+            title="Save Results Outline as",
+            initialdir=str(Path(initial).parent) if initial else None,
+            initialfile=Path(initial).name if initial else "Results outline - SensorLab.docx",
+            defaultextension=".docx",
+            filetypes=[("Word document", "*.docx")],
+        )
+        if path:
+            self.output_var.set(path)
+            self._sync_build_state()
+
+    def _add_root(self) -> None:
+        path = filedialog.askdirectory(title="Select a SensorLab degradation folder")
+        if not path:
+            return
+        candidate = Path(path).resolve()
+        if candidate in self.degradation_roots:
+            return
+        self.degradation_roots.append(candidate)
+        try:
+            self._refresh_sources(show_error=True)
+        except ValueError:
+            self.degradation_roots.pop()
+            self._refresh_sources(show_error=False)
+
+    def _remove_root(self) -> None:
+        selected = list(self.root_list.curselection())
+        if not selected:
+            return
+        for index in reversed(selected):
+            del self.degradation_roots[index]
+        self._sync_root_list()
+        self._refresh_sources(show_error=False)
+
+    def _sync_root_list(self) -> None:
+        self.root_list.delete(0, "end")
+        for root in self.degradation_roots:
+            self.root_list.insert("end", str(root))
+
+    def _refresh_sources(self, *, show_error: bool) -> None:
+        old_devices = {key: var.get() for key, var in self.device_vars.items()}
+        try:
+            self.sources = discover_degradation_sources(self.degradation_roots) \
+                if self.degradation_roots else {}
+        except (OSError, ValueError) as exc:
+            self.sources = {}
+            if show_error:
+                messagebox.showerror("Invalid degradation source", str(exc), parent=self)
+            self._render_conditions(old_devices)
+            self._sync_build_state()
+            if show_error:
+                raise ValueError(str(exc)) from exc
+            return
+        self._sync_root_list()
+        self._render_conditions(old_devices)
+        self._sync_build_state()
+
+    def _render_conditions(self, old_devices: dict[str, str]) -> None:
+        for widget in self.conditions_frame.winfo_children():
+            widget.destroy()
+        self.device_vars.clear()
+        if not self.sources:
+            ttk.Label(self.conditions_frame, text="No conditions detected.",
+                      style="Muted.TLabel").pack(anchor="w")
+            return
+        order = [key for key in self._ORDER if key in self.sources]
+        order.extend(sorted(key for key in self.sources if key not in order))
+        for row, key in enumerate(order):
+            source = self.sources[key]
+            devices = available_report_devices(source)
+            selected = old_devices.get(key, "")
+            if selected not in devices:
+                selected = devices[0] if devices else ""
+            variable = tk.StringVar(value=selected)
+            self.device_vars[key] = variable
+            line = ttk.Frame(self.conditions_frame)
+            line.pack(fill="x", pady=2)
+            ttk.Label(line, text=source.label, width=22).pack(side="left")
+            ttk.Label(line, text=str(source.directory), style="Muted.TLabel",
+                      width=65).pack(side="left", fill="x", expand=True)
+            ttk.Label(line, text="Device:").pack(side="left", padx=(8, 3))
+            combo = ttk.Combobox(line, textvariable=variable, values=devices,
+                                 state="readonly", width=21)
+            combo.pack(side="left")
+
+    def _sync_build_state(self) -> None:
+        ready = (
+            all(key in self.sources for key in self._ORDER)
+            and all(self.device_vars.get(key) and self.device_vars[key].get()
+                    for key in self._ORDER)
+            and bool(self.outline_var.get().strip())
+            and bool(self.output_var.get().strip())
+            and bool(self.supplemental_var.get().strip())
+        )
+        self.build_btn.config(state="normal" if ready else "disabled")
+
+    def _run(self) -> None:
+        outline = self.outline_var.get().strip()
+        supplement = self.supplemental_var.get().strip()
+        output = self.output_var.get().strip()
+        devices = {key: var.get() for key, var in self.device_vars.items()}
+        roots = [str(root) for root in self.degradation_roots]
+        if Path(output).exists():
+            overwrite = messagebox.askyesno(
+                "Replace existing report?",
+                f"The output already exists:\n{output}\n\nReplace it?",
+                parent=self,
+            )
+            if not overwrite:
+                return
+        else:
+            overwrite = False
+        self.build_btn.config(state="disabled")
+        self._log_report(f"Building from {len(roots)} degradation roots…")
+
+        def worker() -> None:
+            try:
+                result = build_results_report(
+                    outline, roots, supplement, output, devices, overwrite=overwrite)
+                self._queue.put(("done", result))
+            except Exception as exc:
+                self._queue.put(("error", f"{type(exc).__name__}: {exc}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _drain_report_queue(self) -> None:
+        try:
+            while True:
+                kind, payload = self._queue.get_nowait()
+                if kind == "done":
+                    result = payload
+                    assert isinstance(result, ReportBuildResult)
+                    self._log_report(f"Report written: {result.output_path}")
+                    self._log_report(f"Manifest written: {result.manifest_path}")
+                    self._log_report(
+                        f"Images added: {result.images_added}; missing: {len(result.missing_images)}")
+                    self.build_btn.config(state="normal")
+                    messagebox.showinfo(
+                        "Results report complete",
+                        f"Report created with {result.images_added} plots.\n"
+                        f"Missing placeholders: {len(result.missing_images)}\n\n"
+                        f"{result.output_path}",
+                        parent=self,
+                    )
+                else:
+                    self._log_report(str(payload))
+                    self.build_btn.config(state="normal")
+                    messagebox.showerror("Results report error", str(payload), parent=self)
+        except queue.Empty:
+            pass
+        if self.winfo_exists():
+            self.after(100, self._drain_report_queue)
+
+    def _open_output_folder(self) -> None:
+        output = self.output_var.get().strip()
+        folder = Path(output).expanduser().parent if output else Path.cwd()
+        if folder.is_dir():
+            os.startfile(str(folder))
+
+    def _log_report(self, text: str) -> None:
         self.log.config(state="normal")
         self.log.insert("end", text + "\n")
         self.log.see("end")

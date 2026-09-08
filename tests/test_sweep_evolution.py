@@ -77,6 +77,9 @@ def test_sweep_evolution_writes_one_file_per_device_and_back_gate(tmp_path):
     swdir = os.path.join(out, "degradation", "A", "JG_n03", "sweeps")
     assert os.path.isfile(os.path.join(swdir, "ESN111_D1T1_Vbg0.png"))
     assert os.path.isfile(os.path.join(swdir, "ESN111_D1T1_Vbg4.png"))
+    collapse_dir = os.path.join(out, "degradation", "A", "JG_n03", "collapsed")
+    assert os.path.isfile(os.path.join(collapse_dir, "ESN111_D1T1_Vbg0.png"))
+    assert os.path.isfile(os.path.join(collapse_dir, "ESN111_D1T1_Vbg4.png"))
 
 
 def test_sweep_evolution_curve_shifts_between_timepoints(tmp_path):

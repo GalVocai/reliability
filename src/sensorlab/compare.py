@@ -17,8 +17,12 @@ from .io import read_run, scan_result_files
 from .io.master_writer import write_master
 from .measurements.jg import _clean_curve, back_gate_groups, relevant_part
 from .measurements.se import _trailing_level
-from .plotting.evolution_plot import plot_jg_sweep_evolution, plot_sensing_evolution
+from .plotting.evolution_plot import (plot_jg_sweep_collapse,
+                                      plot_jg_sweep_evolution,
+                                      plot_sensing_evolution)
+from .plotting.jg_h2_plot import plot_jg_h2_device
 from .plotting.se_plot import _continuous as _se_continuous
+from .plotting.style import load_style
 from .plotting.steps_plot import _segments as _steps_segments
 from .plotting.trend_plot import (
     plot_grouped_average,
@@ -283,10 +287,13 @@ def _write_jg_sweep_evolution(timepoints: list[tuple[object, str]],
             protocol_xlim[1] if xlim[1] is None else float(xlim[1]),
         )
     n_figs = 0
+    n_collapsed = 0
     for key, curves in per_device.items():
         cond = dev_condition[key]
         d = os.path.join(deg_root, _cond_folder(cond), _JG_N03_SHEET, "sweeps")
+        collapse_dir = os.path.join(deg_root, _cond_folder(cond), _JG_N03_SHEET, "collapsed")
         os.makedirs(d, exist_ok=True)
+        os.makedirs(collapse_dir, exist_ok=True)
         label = dev_label[key]
         # one evolution figure PER back-gate, so Vbg=0 and Vbg=4 are separated
         for vb in sorted({c["bg"] for c in curves}, key=lambda v: float(v)):
@@ -297,8 +304,54 @@ def _write_jg_sweep_evolution(timepoints: list[tuple[object, str]],
                 f"{label} — JG_n03 sweep evolution (Vbg={float(vb):g} V)", xlim=sweep_xlim,
                 time_axis=time_axis, hours_per_cycle=hours_per_cycle,
                 plot_mode=plot_mode)
+            plot_jg_sweep_collapse(
+                bg_curves, os.path.join(collapse_dir, fname),
+                f"{label} — JG_n03 aligned to baseline (Vbg={float(vb):g} V)",
+                xlim=sweep_xlim, time_axis=time_axis,
+                hours_per_cycle=hours_per_cycle, plot_mode=plot_mode)
             n_figs += 1
+            n_collapsed += 1
     emit(f"  JG_n03 sweep evolution: {n_figs} plots ({len(per_device)} devices x back-gate)")
+    emit(f"  JG_n03 baseline-aligned collapse: {n_collapsed} plots")
+
+
+def _write_jg_h2_report_overlays(timepoints: list[tuple[object, str]],
+                                 results: dict, deg_root: str,
+                                 emit: Callable[[str], None]) -> None:
+    """Write baseline and final JG air/H2 overlays for every report device."""
+
+    dev_condition = _dev_condition_map(results, "JG_H2")
+    if not dev_condition or not timepoints:
+        return
+    ordered = sorted(timepoints, key=lambda item: day_to_num(item[0]))
+    checkpoints = [("baseline", ordered[0]), ("end", ordered[-1])]
+    style = load_style()
+    written = 0
+    for tag, (day_label, folder) in checkpoints:
+        air_path = _find_raw_path_by_major(folder, DEFAULT.jg.h2_air_major)
+        h2_path = _find_raw_path_by_major(folder, DEFAULT.jg.h2_exposure_major)
+        rec_path = _find_raw_path_by_major(folder, DEFAULT.jg.h2_recovery_major)
+        if air_path is None or h2_path is None:
+            emit(f"WARNING: JG_H2 report overlay: missing n{DEFAULT.jg.h2_air_major:02d}/"
+                 f"n{DEFAULT.jg.h2_exposure_major:02d} at {day_label}; {tag} overlays skipped.")
+            continue
+        air = read_run(air_path)
+        h2 = read_run(h2_path)
+        rec = read_run(rec_path) if rec_path is not None else None
+        h2_keys = {(ch.esn, ch.tnumber) for ch in h2.channels}
+        for ch in air.channels:
+            key = (ch.esn, ch.tnumber)
+            if key not in dev_condition or key not in h2_keys:
+                continue
+            condition = dev_condition[key]
+            out_dir = os.path.join(deg_root, _cond_folder(condition), "JG_H2", "overlays")
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = os.path.join(out_dir, sanitize_filename(f"{ch.label}_{tag}.png"))
+            plot_jg_h2_device(
+                air, h2, ch, out_path, experiment_type="JG_H2",
+                day=str(day_label), style=style, rec=rec)
+            written += 1
+    emit(f"  JG_H2 report overlays: {written} plots (baseline + end)")
 
 
 def _sensing_curve(run, col: str, kind: str):
@@ -611,6 +664,7 @@ def run_degradation(
                                  ylim=sensing_ylim, time_axis=time_axis,
                                  hours_per_cycle=hours_per_cycle,
                                  plot_mode=raw_plot_mode)
+        _write_jg_h2_report_overlays(timepoints, results, deg_root, emit)
 
     emit("Degradation done -> " + deg_root)
     return deg_root
