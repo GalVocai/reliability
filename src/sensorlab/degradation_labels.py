@@ -9,7 +9,8 @@ for anything missing (new metrics added later keep working untouched).
 Three sections:
   * ``ylabels`` -- metric name -> y-axis label (with units). Keys include the
     grouped-plot pseudo-metrics ``ppm_resp_pct`` / ``ppm_delta`` / ``ppm_t90_s``
-    and the special ``@degradation`` (the retention "%") / ``@delta_Vth`` axes.
+    and the special ``@degradation`` (a template for retention plots) /
+    ``@delta_Vth`` axes.
   * ``titles``  -- plot family -> title template, placeholders ``{label}`` and
     ``{base}`` (the baseline day).
   * ``hidden``  -- metric names to skip entirely (no plot produced).
@@ -26,6 +27,19 @@ DEFAULT_LABELS_PATH = Path.home() / ".sensorlab" / "degradation_labels.json"
 # Split off mathtext ($...$) and bracketed units/qualifiers ((...) / [...]) so
 # they are never touched by title-casing.
 _PROTECTED = re.compile(r"(\$[^$]*\$|\([^)]*\)|\[[^\]]*\])")
+_TRAILING_BRACKET = re.compile(r"\s+[\(\[]([^\)\]]+)[\)\]]$")
+_UNITS = {
+    "v", "mv", "na", "na/v", "na/s", "na/ppm", "na/decade", "na·v",
+    "naâ·v", "mv/dec", "s", "ppm", "%", "%/decade",
+}
+
+
+def _without_unit(label: str) -> str:
+    """Remove a trailing measurement unit, retaining qualifiers such as (off)."""
+    match = _TRAILING_BRACKET.search(label)
+    if match and match.group(1).casefold() in _UNITS:
+        return label[:match.start()].rstrip()
+    return label
 
 
 def titlecase_label(s: str) -> str:
@@ -53,7 +67,8 @@ _DEFAULT_YLABELS: dict[str, str] = {
     "recovery_t90_s": "Recovery t90 (s)", "LOD_ppm": "LOD (ppm)",
     "sensitivity_pct_per_dec": "Sensitivity (%/decade)",
     # STEPS extra graphs
-    "sensitivity_nA_per_ppm": "Sensitivity (nA/ppm)",
+    "sensitivity_nA_per_ppm": "Sensitivity (nA/ppm)",  # legacy studies
+    "sensitivity_nA_per_decade": "Sensitivity (nA/decade)",
     "@resp_vs_ppm": "ΔResponse (nA)",          # y-axis of response-vs-concentration
     # JG_H2 gas comparison (ΔVth in V, by request)
     "Vth_air": r"$\mathbf{V_{Th}}$ air (V)", "Vth_H2": r"$\mathbf{V_{Th}}$ H2 (V)",
@@ -62,7 +77,7 @@ _DEFAULT_YLABELS: dict[str, str] = {
     "delta_Vth_recovery": r"$\mathbf{|\Delta V_{Th}|}$ recovery (V)",
     "resp_at_Vth_H2_pct": r"Response @$\mathbf{V_{Th}}$ H2 (%)",
     "resp_at_Vth_recovery_pct": r"Response @$\mathbf{V_{Th}}$ recovery (%)",
-    "max_resp_H2_pct": "Maximum Response (%)", "max_resp_recovery_pct": "Max response recovery (%)",
+    "max_resp_H2_pct": "Response (%)", "max_resp_recovery_pct": "Response recovery (%)",
     "Vj_max_resp_H2": "Vj @max response H2 (V)", "Vj_max_resp_recovery": "Vj @max response recovery (V)",
     # working points
     "Vj_State1": "Vj State1 (V)", "Vj_State2": "Vj State2 (V)",
@@ -74,7 +89,7 @@ _DEFAULT_YLABELS: dict[str, str] = {
     "ppm_resp_pct": "H2 response (%)", "ppm_delta": "H2 response delta (nA)",
     "ppm_t90_s": "H2 t90 (s)",
     # special axes
-    "@degradation": "%",                       # retention view (100 = baseline)
+    "@degradation": "{label} Retention (%)",  # 100 = baseline
     "@delta_Vth": r"$\mathbf{\Delta V_{Th}}$ (mV)",   # JG_n03 day-vs-baseline shift
 }
 
@@ -103,8 +118,16 @@ class DegradationLabels:
         raw = self.ylabels.get(str(metric), str(metric).replace("_", " "))
         return titlecase_label(raw)
 
-    def deg_ylabel(self) -> str:
-        return self.ylabels.get("@degradation", "%")
+    def deg_ylabel(self, metric: str) -> str:
+        """Metric name followed by Retention (%), using its configured label.
+
+        Existing user config files store ``@degradation`` as ``%``. Interpret
+        that old default as the new template so they work without an edit.
+        """
+        template = self.ylabels.get("@degradation", "{label} Retention (%)")
+        if template.strip() in {"%", "(%)"}:
+            template = "{label} Retention (%)"
+        return template.replace("{label}", _without_unit(self.ylabel(metric)))
 
     def title(self, label: str, family: str, base: object) -> str:
         tmpl = self.titles.get(family, "{label}")

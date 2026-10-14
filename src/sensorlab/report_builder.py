@@ -16,13 +16,17 @@ from pathlib import Path
 import re
 from typing import Iterable, Mapping, Sequence
 
+import pandas as pd
+
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 
-from .plotting.overview_plot import generate_overview_plots
+from .plotting.overview_plot import (
+    _collect_overview_data, generate_overview_plots, summarize_overview_endpoints,
+)
 
 
 _MODE_DIRS = {"JG_n03", "JG_H2", "SE_n04", "STEPS_n07"}
@@ -65,6 +69,7 @@ class ReportBuildResult:
     images_added: int
     missing_images: tuple[ReportImage, ...]
     overview_generated: tuple[Path, ...]
+    endpoint_summary_path: Path | None = None
 
 
 _CONDITION_META = {
@@ -462,6 +467,42 @@ def _manifest_panel(panel: ReportPanel) -> dict:
     }
 
 
+def _insert_endpoint_summary(document: Document, anchor, summary: pd.DataFrame) -> None:
+    heading = _insert_text(anchor, "Final-checkpoint numerical summary", bold=True, size=11)
+    heading.paragraph_format.keep_with_next = True
+    _insert_text(anchor,
+                 "Values use exactly the population means plotted in the overview. "
+                 "Each row uses its own last available day and the earliest plotted day as reference. "
+                 "Change (%) = 100 x (last/reference - 1). A 0.60 normalized final value means a "
+                 "40% decrease. Response-time increases mean slower response. Signed voltage shifts "
+                 "are not assigned a performance-loss score; percentage change is N/A at zero reference. "
+                 "There is no combined performance score across metrics.", size=9)
+    for key in _REPORT_ORDER:
+        rows = summary[summary.condition == key]
+        title = _insert_text(anchor, str(_CONDITION_META[key]["label"]), bold=True, size=10)
+        title.paragraph_format.keep_with_next = True
+        table = document.add_table(rows=1, cols=6)
+        headers = ("Metric (unit)", "Reference value (day)", "Last day", "Last value", "Change (%)", "Interpretation")
+        for cell, label in zip(table.rows[0].cells, headers):
+            cell.text = label
+        repeat_header = OxmlElement("w:tblHeader")
+        table.rows[0]._tr.get_or_add_trPr().append(repeat_header)
+        for row in rows.itertuples():
+            change = "N/A" if pd.isna(row.relative_change_pct) else f"{row.relative_change_pct:+.1f}%"
+            values = (f"{row.metric_label} ({row.unit})",
+                      f"{row.baseline_value:.4g} (day {row.baseline_day:g})",
+                      f"{row.last_day:g}", f"{row.last_value:.4g}", change, row.interpretation)
+            for cell, value in zip(table.add_row().cells, values):
+                cell.text = value
+        for row in table.rows:
+            _prevent_row_split(row)
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        run.font.size = Pt(8)
+        anchor._p.addprevious(table._tbl)
+
+
 def build_results_report(
     outline_path: str | Path,
     degradation_roots: Iterable[str | Path],
@@ -512,9 +553,11 @@ def build_results_report(
     if end_anchor.text.strip():
         end_anchor = document.add_paragraph()
 
-    overview_generated = generate_overview_plots(
-        {key: sources[key].directory for key in _REPORT_ORDER}, supplemental_root
-    )
+    directories = {key: sources[key].directory for key in _REPORT_ORDER}
+    # Collect once: plots and numerical summaries must use the exact same data.
+    overview_data = _collect_overview_data(directories)
+    endpoint_summary = summarize_overview_endpoints(overview_data)
+    overview_generated = generate_overview_plots(directories, supplemental_root, data=overview_data)
     overview = overview_panel(supplemental_root)
     panels_by_condition = {
         key: condition_panels(sources[key], devices[key]) for key in _REPORT_ORDER
@@ -525,6 +568,7 @@ def build_results_report(
     hot_anchor = section_anchors["hot_storage"]
     _remove_blank_paragraphs_before(hot_anchor)
     images_added += _insert_panel(document, hot_anchor, overview, missing_images)
+    _insert_endpoint_summary(document, hot_anchor, endpoint_summary)
 
     next_anchor = {
         "hot_storage": section_anchors["85c_85rh"],
@@ -541,9 +585,23 @@ def build_results_report(
 
     output.parent.mkdir(parents=True, exist_ok=True)
     document.save(str(output))
+    endpoint_summary_path = output.with_name(output.stem + ".endpoints.xlsx")
+    with pd.ExcelWriter(endpoint_summary_path, engine="openpyxl") as writer:
+        endpoint_summary.to_excel(writer, sheet_name="Final checkpoint", index=False)
+        plotted_rows = []
+        for metric, series in overview_data.items():
+            for condition, frame in series.items():
+                plotted_rows.append(frame.assign(metric=metric, condition=condition))
+        pd.concat(plotted_rows, ignore_index=True).to_excel(writer, sheet_name="Plot source values", index=False)
+        for sheet in writer.sheets.values():
+            sheet.freeze_panes = "A2"
+            sheet.auto_filter.ref = sheet.dimensions
+            for column in sheet.columns:
+                sheet.column_dimensions[column[0].column_letter].width = min(
+                    55, max(12, max(len(str(cell.value or "")) for cell in column) + 2))
     manifest_path = output.with_name(output.stem + ".manifest.json")
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "outline": str(outline),
         "output": str(output),
@@ -551,6 +609,8 @@ def build_results_report(
         "supplemental_root": str(Path(supplemental_root).expanduser().resolve()),
         "overview_generated": [str(path) for path in overview_generated],
         "overview": _manifest_panel(overview),
+        "endpoint_summary_path": str(endpoint_summary_path),
+        "endpoint_summary": json.loads(endpoint_summary.to_json(orient="records")),
         "conditions": {
             key: {
                 "label": sources[key].label,
@@ -568,5 +628,5 @@ def build_results_report(
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     return ReportBuildResult(
-        output, manifest_path, images_added, tuple(missing_images), overview_generated
+        output, manifest_path, images_added, tuple(missing_images), overview_generated, endpoint_summary_path
     )

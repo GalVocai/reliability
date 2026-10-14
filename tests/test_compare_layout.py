@@ -36,7 +36,7 @@ def test_jg_n05_n06_are_skipped_but_n03_kept(tmp_path):
 
     run_degradation([("0", t0), ("2", t2)], out_dir=out, baseline_day="0", make_plots=True)
 
-    root = os.path.join(out, "degradation", "A")
+    root = os.path.join(compare_mod.active_degradation_root(out), "A")
     assert os.path.isdir(os.path.join(root, "JG_n03"))
     assert not os.path.isdir(os.path.join(root, "JG_n05"))
     assert not os.path.isdir(os.path.join(root, "JG_n06"))
@@ -51,7 +51,7 @@ def test_exclude_cond_day_drops_it_from_calc_and_output(tmp_path):
     run_degradation([("0", t0), ("2", t2), ("4", t4)], out_dir=out, baseline_day="0",
                     make_plots=False, exclude_cond_days={("A", "2")})
 
-    agg = pd.read_excel(os.path.join(out, "degradation", "A", "JG_n03", "aggregate.xlsx"))
+    agg = pd.read_excel(os.path.join(compare_mod.active_degradation_root(out), "A", "JG_n03", "aggregate.xlsx"))
     days = set(agg["day"].astype(str))
     assert "2" not in days              # the excluded condition-day is gone
     assert {"0", "4"} <= days           # the rest stay
@@ -65,12 +65,12 @@ def test_cycle_axis_exports_estimated_cycles_without_replacing_days(tmp_path):
     run_degradation([("0", t0), ("2", t2)], out_dir=out, baseline_day="0",
                     make_plots=True, time_axis="cycles", hours_per_cycle=2.0)
 
-    agg = pd.read_excel(os.path.join(out, "degradation", "A", "JG_n03", "aggregate.xlsx"))
+    agg = pd.read_excel(os.path.join(compare_mod.active_degradation_root(out), "A", "JG_n03", "aggregate.xlsx"))
     assert set(agg["day_num"]) == {0, 2}       # original elapsed time is preserved
     assert set(agg["cycle_num"]) == {0, 24}    # 2 days * 24 h/day / 2 h/cycle
     row = agg[(agg["metric"] == "Vth_bg0") & (agg["day_num"] == 2)].iloc[0]
     assert row["delta_mean"] == pytest.approx(-0.5)  # calculation is unchanged
-    assert os.path.isfile(os.path.join(out, "degradation", "A", "JG_n03",
+    assert os.path.isfile(os.path.join(compare_mod.active_degradation_root(out), "A", "JG_n03",
                                        "trends", "average", "Vth.png"))
 
 
@@ -88,7 +88,7 @@ def test_trends_are_sorted_into_family_subfolders(tmp_path):
 
     run_degradation([("0", t0), ("2", t2)], out_dir=out, baseline_day="0", make_plots=True)
 
-    tdir = os.path.join(out, "degradation", "A", "JG_n03", "trends")
+    tdir = os.path.join(compare_mod.active_degradation_root(out), "A", "JG_n03", "trends")
     for sub in ("devices", "average", "degradation"):
         files = os.listdir(os.path.join(tdir, sub))
         # Vth_bg0/Vth_bg4 are grouped -> one "Vth.png", not "Vth_bg0.png"
@@ -108,13 +108,13 @@ def test_jg_n03_gets_delta_vth_in_mv_alongside_normal_plots(tmp_path):
 
     run_degradation([("0", t0), ("2", t2)], out_dir=out, baseline_day="0", make_plots=True)
 
-    tdir = os.path.join(out, "degradation", "A", "JG_n03", "trends")
+    tdir = os.path.join(compare_mod.active_degradation_root(out), "A", "JG_n03", "trends")
     for sub in ("devices", "average"):
         assert os.path.isfile(os.path.join(tdir, sub, "delta_Vth.png"))
     # degradation/ (the % family) gets no delta_Vth counterpart
     assert not os.path.isfile(os.path.join(tdir, "degradation", "delta_Vth.png"))
 
-    agg = pd.read_excel(os.path.join(out, "degradation", "A", "JG_n03", "aggregate.xlsx"))
+    agg = pd.read_excel(os.path.join(compare_mod.active_degradation_root(out), "A", "JG_n03", "aggregate.xlsx"))
     row = agg[(agg["metric"] == "Vth_bg0") & (agg["day_num"] == 2)].iloc[0]
     assert row["delta_mean"] == pytest.approx(0.015)   # raw V in the table, unscaled
 
@@ -143,7 +143,7 @@ def test_delta_vth_is_wired_with_negative_scale(tmp_path, monkeypatch):
     out = str(tmp_path / "out")
     run_degradation([("0", t0), ("2", t2)], out_dir=out, baseline_day="0", make_plots=True)
 
-    agg = pd.read_excel(os.path.join(out, "degradation", "A", "JG_n03", "aggregate.xlsx"))
+    agg = pd.read_excel(os.path.join(compare_mod.active_degradation_root(out), "A", "JG_n03", "aggregate.xlsx"))
     row = agg[(agg["metric"] == "Vth_bg0") & (agg["day_num"] == 2)].iloc[0]
     assert row["delta_mean"] == pytest.approx(0.264599, abs=1e-5)   # raw pipeline delta: positive
 

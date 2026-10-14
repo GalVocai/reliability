@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
 import shutil
+from datetime import datetime
+from pathlib import Path
 from typing import Callable
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
 
-from .degradation import _KEY_CANDIDATES, build_degradation, day_to_num, filter_devices
+from .degradation import (_KEY_CANDIDATES, _sample_sd, active_analysis_root,
+                          build_degradation, day_to_num, filter_devices)
 from .degradation_labels import load_degradation_labels
 from .io import read_run, scan_result_files
+from .jg_calibration import JgCalibration, apply_jg_calibration
 from .io.master_writer import write_master
 from .measurements.jg import _clean_curve, back_gate_groups, relevant_part
 from .measurements.se import _trailing_level
@@ -60,7 +66,7 @@ _BG_METRIC_RE = re.compile(r"^(.+)_bg(-?\d+)$")
 # Degradation-family plots show RETENTION, not raw degradation%: plotted =
 # 100 - degradation_pct (= value/baseline*100), so the curve starts at 100%
 # on the baseline day and drops as the metric degrades -- more intuitive than
-# starting at 0. scale=-1, offset=100 does 100 - deg%. The "%" y-axis, the
+# starting at 0. scale=-1, offset=100 does 100 - deg%. The y-axis label, the
 # per-metric labels and the titles all come from the user-editable
 # degradation_labels config (load_degradation_labels).
 _DEG_SCALE, _DEG_OFFSET = -1.0, 100.0
@@ -109,14 +115,19 @@ _TIMEPOINT_NAME_RE = re.compile(r"^(baseline|base|t0|\d+\s*d)$", re.IGNORECASE)
 
 
 def _find_run_folder(timepoint_dir: str) -> str | None:
-    """Inside a timepoint dir, the run folder is the 'E...' subfolder that has
-    an 'analysis' output dir. Falls back to any subfolder that has one."""
+    """Find a run folder with active analysis masters."""
     try:
         names = sorted(os.listdir(timepoint_dir))
     except OSError:
         return None
-    with_analysis = [(n, os.path.join(timepoint_dir, n)) for n in names
-                     if os.path.isdir(os.path.join(timepoint_dir, n, "analysis"))]
+    with_analysis = []
+    for name in names:
+        folder = Path(timepoint_dir) / name
+        if not folder.is_dir():
+            continue
+        active = active_analysis_root(folder)
+        if active != folder and active.is_dir():
+            with_analysis.append((name, str(folder)))
     for name, d in with_analysis:
         if name.upper().startswith("E"):
             return d
@@ -127,12 +138,9 @@ def discover_timepoints(parent: str) -> list[tuple[str, str]]:
     """Auto-find degradation timepoints under a parent folder.
 
     Each timepoint is a subfolder named like 'baseline' / '2D' / '7D' / '14D';
-    inside it the actual run folder is the 'E...' subfolder that contains an
-    'analysis' output dir. Returns [(day_label, run_folder), ...] sorted by day.
-    Subfolders that don't look like a timepoint, or whose run folder has not
-    been analysed yet (no 'analysis' dir), are skipped -- so pointing this at
-    the reliability root picks up baseline/2D/7D/... and ignores 'degradation',
-    calibration folders, etc."""
+    inside it the actual run folder is the 'E...' subfolder with an active
+    versioned batch or a legacy 'analysis' dir. Returns
+    [(day_label, run_folder), ...] sorted by day. Other folders are skipped."""
     out: list[tuple[str, str]] = []
     if not os.path.isdir(parent):
         return out
@@ -162,16 +170,23 @@ def _sel_delta_items(ppm_groups: dict, steps_ppm) -> list[tuple[float, str]]:
     """The ``<ppm>_delta`` exposure metrics (ppm > 0) to use, honouring the
     STEPS ppm selection when one is given. Returns sorted ``[(ppm, metric)]``."""
     items = [(p, m) for p, m in ppm_groups.get("delta", []) if p > 0]
-    if steps_ppm:
+    # ``None`` means "all concentrations".  An empty set is deliberately
+    # different: the user unticked every concentration in the GUI, so no
+    # concentration response/sensitivity graph should be calculated.
+    if steps_ppm is not None:
         sel = {int(round(float(x))) for x in steps_ppm}
         items = [(p, m) for p, m in items if int(round(p)) in sel]
     return sorted(items)
 
 
 def _steps_sensitivity(tidy, delta_items: list[tuple[float, str]]):
-    """Per (ESN, TNumber, day_num) linear sensitivity = slope of ``<ppm>_delta``
-    (nA) vs ppm over ``delta_items``. Returns a tidy frame with columns
-    ESN, TNumber, day_num, metric='sensitivity_nA_per_ppm', value."""
+    """Per-device linear sensitivity over the GUI-selected concentration steps.
+
+    For each (ESN, TNumber, day_num), fit
+    ``delta_Ids = intercept + sensitivity * H2_ppm``.  The returned slope is
+    therefore in nA/ppm.  The zero-ppm baseline is not a response point and is
+    not included in ``delta_items``.
+    """
     metric_ppm = {str(m): float(p) for p, m in delta_items}
     sub = tidy[tidy["metric"].astype(str).isin(metric_ppm)].copy()
     cols = ["ESN", "TNumber", "day_num", "metric", "value"]
@@ -189,10 +204,6 @@ def _steps_sensitivity(tidy, delta_items: list[tuple[float, str]]):
     return pd.DataFrame(rows, columns=cols)
 
 
-def _avdev(s):
-    return (s - s.mean()).abs().mean()
-
-
 def _bg_groups(metrics) -> dict[str, list[tuple[float, str]]]:
     """Group sweep-mode metrics like Vth_bg0/Vth_bg4 by their base name,
     keyed by back-gate voltage (mirrors _steps_ppm_groups)."""
@@ -208,6 +219,35 @@ def _bg_groups(metrics) -> dict[str, list[tuple[float, str]]]:
 
 def _bg_label(bg: float) -> str:
     return f"BG={bg:g} (V)"
+
+
+def _write_vbg_retention(agg, out_dir: str, stem: str, metric: str,
+                         labels, base_label: object, axis_kwargs: dict,
+                         ppm_items: list[tuple[float, str]] | None = None,
+                         bg_items: list[tuple[float, str]] | None = None) -> None:
+    """Add one retention figure per Vbg, with Vbg only in the filename."""
+    if bg_items is not None:
+        groups = ((vb, agg[agg["metric"] == bg_metric]) for vb, bg_metric in bg_items)
+    elif "Vbg" in agg.columns:
+        groups = agg.groupby("Vbg", dropna=True)
+    else:
+        return
+    matched_bg = _BG_METRIC_RE.match(metric)
+    display_metric = matched_bg.group(1) if matched_bg else metric
+    other_struct = [c for c in ("segment", "state_Vj") if c in agg.columns]
+    for vb, rows in groups:
+        if rows.empty:
+            continue
+        suffix = f"Vbg{float(vb):g}"
+        out_path = os.path.join(out_dir, f"{stem}_{suffix}.png")
+        kwargs = dict(value="deg", scale=_DEG_SCALE, offset=_DEG_OFFSET,
+                      ylabel_override=labels.deg_ylabel(display_metric),
+                      title=labels.title(_display(display_metric), "degradation", base_label),
+                      **axis_kwargs)
+        if ppm_items is None:
+            plot_metric_average(rows, out_path, display_metric, other_struct, **kwargs)
+        else:
+            plot_grouped_average(rows, out_path, ppm_items, display_metric, **kwargs)
 
 
 _SHEET_MAJOR_RE = re.compile(r"^(SE|STEPS)_n(\d+)$")
@@ -242,7 +282,8 @@ def _write_jg_sweep_evolution(timepoints: list[tuple[object, str]],
                               time_axis: str = "days",
                               hours_per_cycle: float = 2.0,
                               xlim: tuple[float | None, float | None] | None = None,
-                              plot_mode: str = "line") -> None:
+                              plot_mode: str = "line",
+                              jg_calibration: JgCalibration | None = None) -> None:
     """One figure per device AND per back-gate: its JG_n03 transfer curve
     overlaid across every analyzed timepoint (day = colour), so the SHAPE of
     the sweep's drift is visible directly. Vbg=0 and Vbg=4 are drawn on
@@ -260,6 +301,8 @@ def _write_jg_sweep_evolution(timepoints: list[tuple[object, str]],
             missing.append(str(day_label))
             continue
         run = read_run(path)
+        if jg_calibration is not None:
+            run = apply_jg_calibration(run, jg_calibration)
         data = run.parts()[relevant_part(run)]
         day_num = day_to_num(day_label)
         for vb, sub in back_gate_groups(data):
@@ -317,7 +360,8 @@ def _write_jg_sweep_evolution(timepoints: list[tuple[object, str]],
 
 def _write_jg_h2_report_overlays(timepoints: list[tuple[object, str]],
                                  results: dict, deg_root: str,
-                                 emit: Callable[[str], None]) -> None:
+                                 emit: Callable[[str], None],
+                                 jg_calibration: JgCalibration | None = None) -> None:
     """Write baseline and final JG air/H2 overlays for every report device."""
 
     dev_condition = _dev_condition_map(results, "JG_H2")
@@ -338,6 +382,10 @@ def _write_jg_h2_report_overlays(timepoints: list[tuple[object, str]],
         air = read_run(air_path)
         h2 = read_run(h2_path)
         rec = read_run(rec_path) if rec_path is not None else None
+        if jg_calibration is not None:
+            air = apply_jg_calibration(air, jg_calibration)
+            h2 = apply_jg_calibration(h2, jg_calibration)
+            rec = apply_jg_calibration(rec, jg_calibration) if rec is not None else None
         h2_keys = {(ch.esn, ch.tnumber) for ch in h2.channels}
         for ch in air.channels:
             key = (ch.esn, ch.tnumber)
@@ -442,7 +490,35 @@ def _write_sensing_evolution(timepoints: list[tuple[object, str]],
         emit(f"  {sheet} sensing evolution: {len(per_device)} device plots")
 
 
-def run_degradation(
+def _calibration_from_masters(timepoints: list[tuple[object, str]]) -> JgCalibration | None:
+    """Use the same JG correction for raw overlays as for saved masters."""
+    snapshots: list[Path | None] = []
+    for _label, folder in timepoints:
+        base = Path(folder)
+        path = active_analysis_root(base) / "jg_calibration_used.json"
+        if not path.is_file():
+            path = base / "jg_calibration_used.json"
+        snapshots.append(path if path.is_file() else None)
+    if not any(snapshots):
+        return None
+    if not all(snapshots):
+        raise ValueError("Some timepoint masters use JG current correction and others do not")
+    calibrations = [JgCalibration.from_json(path) for path in snapshots if path is not None]
+    ss_windows = [json.loads(path.read_text(encoding="utf-8")).get("ss_window_nA")
+                  for path in snapshots if path is not None]
+    if any(window != ss_windows[0] for window in ss_windows[1:]):
+        raise ValueError("Fixed-current SS window differs between timepoints")
+    reference = calibrations[0].as_json_dict()
+    reference.pop("source", None)
+    for calibration in calibrations[1:]:
+        comparable = calibration.as_json_dict()
+        comparable.pop("source", None)
+        if comparable != reference:
+            raise ValueError("JG calibration differs between timepoints")
+    return calibrations[0]
+
+
+def _build_degradation_output(
     timepoints: list[tuple[object, str]],
     out_dir: str,
     baseline_day: object | None = None,
@@ -459,8 +535,10 @@ def run_degradation(
     time_axis: str = "days",
     hours_per_cycle: float = 2.0,
     log: Callable[[str], None] | None = None,
+    make_raw_plots: bool = True,
+    output_name: str = "degradation",
 ) -> str:
-    """Build degradation tables + trend plots under out_dir/degradation/.
+    """Build degradation tables + trend plots under out_dir/output_name/.
 
     timepoints: list of (day_label, analysis_or_result_folder).
     Layout: degradation/<condition>/<sheet>/{degradation.xlsx, aggregate.xlsx,
@@ -468,8 +546,8 @@ def run_degradation(
     JG_n05/JG_n06 (the JG_H2 gas-condition sweeps) are skipped: their transfer
     curves only exist to feed JG_H2, not to be tracked on their own.
     Any JG-family metric with a _bg<N> suffix (Vth_bg0/bg4, SS_bg0/bg4,
-    Delta_Vth_bg0/bg4, ...) gets ONE combined plot per base name instead of
-    one per back-gate -- both BGs overlaid on the same axes, colour-coded.
+    Delta_Vth_bg0/bg4, ...) gets a combined plot per base name. Retention
+    plots also get one file per back-gate, with Vbg only in the filename.
     JG_n03 additionally gets a delta_Vth.png (both back-gates) in devices/ and
     average/: the day-vs-baseline Vth shift, in mV (the master itself keeps
     volts).
@@ -486,8 +564,11 @@ def run_degradation(
     tables gain ``cycle_num = day_num * 24 / hours_per_cycle``.
     ``trend_plot_mode`` and ``raw_plot_mode`` independently select lines or
     scatter points for calculated trends and raw-data overlays.
+    ``make_raw_plots=False`` refreshes the aggregate/trend figures without
+    spending time on raw sweep and sensing overlays.
     """
     emit = log or (lambda _m: None)
+    jg_calibration = _calibration_from_masters(timepoints)
     time_axis, hours_per_cycle, x_col, xlabel = _time_axis_settings(
         time_axis, hours_per_cycle)
     for label, tp_folder in timepoints:
@@ -514,11 +595,8 @@ def run_degradation(
         results = {k: (_add_cycle_num(tidy, hours_per_cycle),
                        _add_cycle_num(agg, hours_per_cycle))
                    for k, (tidy, agg) in results.items()}
-    deg_root = os.path.join(out_dir, "degradation")
-    # every call fully regenerates the study from `timepoints`, so a sheet
-    # that stops appearing (dropped mode, now-excluded JG_n05/n06, a renamed
-    # major) must not leave its old folder sitting there looking current.
-    shutil.rmtree(deg_root, ignore_errors=True)
+    deg_root = os.path.join(out_dir, output_name)
+    Path(deg_root).mkdir(parents=True, exist_ok=False)
     labels = load_degradation_labels()   # user-editable y-axis labels + titles
     inc = "all" if include_devices is None else f"{len(include_devices)} selected"
     axis_note = (f"cycles ({hours_per_cycle:g} h/cycle)" if time_axis == "cycles" else "days")
@@ -565,8 +643,9 @@ def run_degradation(
                                 ylabel_override=yl,
                                 title=labels.title(_display(m), "average", base_label), **axis_kwargs)
             plot_metric_average(am, os.path.join(degradation_dir, f"{safe}.png"), m, struct, value="deg",
-                                scale=_DEG_SCALE, offset=_DEG_OFFSET, ylabel_override=labels.deg_ylabel(),
+                                scale=_DEG_SCALE, offset=_DEG_OFFSET, ylabel_override=labels.deg_ylabel(m),
                                 title=labels.title(_display(m), "degradation", base_label), **axis_kwargs)
+            _write_vbg_retention(am, degradation_dir, safe, m, labels, base_label, axis_kwargs)
         for suffix, items in ppm_groups.items():
             key = f"ppm_{suffix}"
             if labels.is_hidden(key):
@@ -582,11 +661,13 @@ def run_degradation(
                                  ylabel_override=yl, title=labels.title(yl, "average", base_label),
                                  **axis_kwargs)
             plot_grouped_average(am, os.path.join(degradation_dir, f"{safe}.png"), items, yl, value="deg",
-                                 scale=_DEG_SCALE, offset=_DEG_OFFSET, ylabel_override=labels.deg_ylabel(),
+                                 scale=_DEG_SCALE, offset=_DEG_OFFSET, ylabel_override=labels.deg_ylabel(key),
                                  title=labels.title(yl, "degradation", base_label), **axis_kwargs)
+            _write_vbg_retention(am, degradation_dir, safe, key, labels, base_label,
+                                 axis_kwargs, ppm_items=items)
         # STEPS-only extra graphs: (1) Delta-Response vs H2 concentration, one
-        # curve per day; (2) linear sensitivity (nA/ppm) vs day. Both honour
-        # the STEPS ppm selection (e.g. exclude 1000 to stay in the linear regime).
+        # curve per day; (2) linear sensitivity (nA/ppm) vs day.
+        # Both use only the ppm boxes selected in the GUI.
         if str(sheet).startswith("STEPS"):
             delta_items = _sel_delta_items(ppm_groups, steps_ppm)
             if len(delta_items) >= 2:
@@ -597,14 +678,14 @@ def run_degradation(
                     ylabel=r_yl, title=labels.title(r_yl, "average", base_label),
                     time_axis=time_axis, hours_per_cycle=hours_per_cycle,
                     plot_mode=trend_plot_mode)
-                # sensitivity is ONE curve vs day (mean +/- AVDEV of the
+                # sensitivity is ONE curve vs day (mean +/- sample SD of the
                 # per-device slopes), dropped at the STEPS folder root.
                 # filter_devices FIRST so the slopes honour the device
                 # selection -- exactly like every other averaged plot.
                 sens = _steps_sensitivity(filter_devices(tidy, include_devices), delta_items)
                 if not sens.empty:
                     agg_sens = (sens.groupby("day_num")["value"]
-                                    .agg(value_mean="mean", value_avdev=_avdev)
+                                    .agg(value_mean="mean", value_sd=_sample_sd)
                                     .reset_index())
                     agg_sens["metric"] = "sensitivity_nA_per_ppm"
                     if time_axis == "cycles":
@@ -615,7 +696,8 @@ def run_degradation(
                     plot_metric_average(
                         agg_sens, os.path.join(d, sensitivity_name),
                         "sensitivity_nA_per_ppm", [], value="value", ylabel_override=s_yl,
-                        title=labels.title(s_yl, "average", base_label), **axis_kwargs)
+                        title=labels.title(s_yl, "average", base_label), y_floor=0.0,
+                        **axis_kwargs)
         for base, items in bg_groups.items():
             if labels.is_hidden(base):
                 continue
@@ -632,8 +714,10 @@ def run_degradation(
                                  title=labels.title(_display(base), "average", base_label), **axis_kwargs)
             plot_grouped_average(am, os.path.join(degradation_dir, f"{safe}.png"), items, base, value="deg",
                                  label_fn=_bg_label, legend_title="Back-gate",
-                                 scale=_DEG_SCALE, offset=_DEG_OFFSET, ylabel_override=labels.deg_ylabel(),
+                                 scale=_DEG_SCALE, offset=_DEG_OFFSET, ylabel_override=labels.deg_ylabel(base),
                                  title=labels.title(_display(base), "degradation", base_label), **axis_kwargs)
+            _write_vbg_retention(am, degradation_dir, safe, base, labels, base_label,
+                                 axis_kwargs, bg_items=items)
             # JG_n03's Vth: an extra, explicit day-vs-baseline shift in mV,
             # dropped alongside the normal plots (not a separate family).
             # Sign: the pipeline's generic `delta` is baseline-value (positive
@@ -653,18 +737,134 @@ def run_degradation(
                                      label_fn=_bg_label, legend_title="Back-gate", scale=-_MV_SCALE,
                                      ylabel_override=dyl,
                                      title=labels.title(_display(dname), "delta", base_label), **axis_kwargs)
+                for vb, bg_metric in items:
+                    bg_rows = am[am["metric"] == bg_metric]
+                    if bg_rows.empty:
+                        continue
+                    plot_metric_average(
+                        bg_rows,
+                        os.path.join(average_dir, f"{dname}_Vbg{vb:g}.png"),
+                        dname, [], value="delta", scale=-_MV_SCALE,
+                        ylabel_override=dyl,
+                        title=labels.title(_display(dname), "delta", base_label),
+                        **axis_kwargs)
         emit(f"  {cond}/{sheet}: {tidy['metric'].nunique()} metrics")
 
-    if make_plots:
+    if make_plots and make_raw_plots:
         _write_jg_sweep_evolution(timepoints, results, deg_root, emit,
                                   time_axis=time_axis, hours_per_cycle=hours_per_cycle,
-                                  xlim=jg_sweep_xlim, plot_mode=raw_plot_mode)
+                                  xlim=jg_sweep_xlim, plot_mode=raw_plot_mode,
+                                  jg_calibration=jg_calibration)
         _write_sensing_evolution(timepoints, results, deg_root, emit,
                                  steps_ppm=steps_ppm, xlim=sensing_xlim,
                                  ylim=sensing_ylim, time_axis=time_axis,
                                  hours_per_cycle=hours_per_cycle,
                                  plot_mode=raw_plot_mode)
-        _write_jg_h2_report_overlays(timepoints, results, deg_root, emit)
+        _write_jg_h2_report_overlays(timepoints, results, deg_root, emit,
+                                     jg_calibration=jg_calibration)
 
     emit("Degradation done -> " + deg_root)
     return deg_root
+
+
+_GENERATED_MANIFEST = ".sensorlab_generated_files.json"
+_ACTIVE_DEGRADATION_PREFIX = ".sensorlab-degradation-batch-"
+
+
+def active_degradation_root(out_dir: str | Path) -> Path:
+    """Return the newest completed degradation run, or the legacy directory."""
+    destination = Path(out_dir).resolve()
+    for manifest in sorted(destination.glob(f"{_ACTIVE_DEGRADATION_PREFIX}*.json"),
+                           reverse=True):
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            name = data.get("output_dir")
+            if (data.get("version") == 1 and isinstance(name, str)
+                    and re.fullmatch(r"degradation_batch_[A-Za-z0-9_]+", name)
+                    and (destination / name).is_dir()):
+                return destination / name
+        except (OSError, ValueError, TypeError):
+            continue
+    return destination / "degradation"
+
+
+def _generated_files_from_manifest(root: Path) -> set[str]:
+    manifest = root / _GENERATED_MANIFEST
+    if not manifest.is_file():
+        return set()
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    if data.get("version") != 1 or not isinstance(data.get("files"), list):
+        raise ValueError(f"Invalid degradation generated-file manifest: {manifest}")
+    return {str(name) for name in data["files"]}
+
+
+def run_degradation(
+    timepoints: list[tuple[object, str]],
+    out_dir: str,
+    baseline_day: object | None = None,
+    make_plots: bool = True,
+    value: str = "value",
+    include_devices: set | None = None,
+    steps_ppm: set | None = None,
+    jg_sweep_xlim: tuple[float | None, float | None] | None = None,
+    sensing_xlim: tuple[float | None, float | None] | None = None,
+    sensing_ylim: tuple[float | None, float | None] | None = None,
+    trend_plot_mode: str = "line",
+    raw_plot_mode: str = "line",
+    exclude_cond_days: set | None = None,
+    time_axis: str = "days",
+    hours_per_cycle: float = 2.0,
+    log: Callable[[str], None] | None = None,
+    make_raw_plots: bool = True,
+) -> str:
+    """Write a new version and activate it only after a complete build."""
+    emit = log or (lambda _message: None)
+    destination = Path(out_dir).resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+    current = active_degradation_root(destination)
+    if current.exists() and not current.is_dir():
+        raise ValueError(f"Degradation output path is not a directory: {current}")
+
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid4().hex[:12]
+    output_name = "degradation_batch_" + run_id
+    stage = Path(_build_degradation_output(
+        timepoints, str(destination), baseline_day=baseline_day,
+        make_plots=make_plots, value=value, include_devices=include_devices,
+        steps_ppm=steps_ppm, jg_sweep_xlim=jg_sweep_xlim,
+        sensing_xlim=sensing_xlim, sensing_ylim=sensing_ylim,
+        trend_plot_mode=trend_plot_mode, raw_plot_mode=raw_plot_mode,
+        exclude_cond_days=exclude_cond_days, time_axis=time_axis,
+        hours_per_cycle=hours_per_cycle, make_raw_plots=make_raw_plots,
+        output_name=output_name,
+        log=lambda message: emit(message)
+        if not message.startswith("Degradation done -> ") else None))
+    expected = destination / output_name
+    if stage.resolve() != expected or not stage.is_dir():
+        raise RuntimeError("Degradation output path is invalid")
+    generated = {path.relative_to(stage).as_posix()
+                 for path in stage.rglob("*") if path.is_file()}
+    preserved: list[str] = []
+    if current.is_dir():
+        previously_generated = _generated_files_from_manifest(current)
+        for source in current.rglob("*"):
+            if not source.is_file():
+                continue
+            relative = source.relative_to(current).as_posix()
+            if (relative == _GENERATED_MANIFEST or relative in generated
+                    or relative in previously_generated):
+                continue
+            target = stage / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            preserved.append(relative)
+    (stage / _GENERATED_MANIFEST).write_text(
+        json.dumps({"version": 1, "files": sorted(generated),
+                    "preserved_files": sorted(preserved)}, indent=2),
+        encoding="utf-8")
+    (destination / f"{_ACTIVE_DEGRADATION_PREFIX}{run_id}.json").write_text(
+        json.dumps({"version": 1, "output_dir": output_name}, indent=2),
+        encoding="utf-8")
+    emit(f"Preserved {len(preserved)} existing files at their original paths.")
+    emit("Previous degradation tree remains at " + str(current))
+    emit("Degradation done -> " + str(stage))
+    return str(stage)

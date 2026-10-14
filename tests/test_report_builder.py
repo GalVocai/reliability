@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from docx import Document
+import pandas as pd
 import pytest
 
 from sensorlab.report_builder import (
@@ -87,6 +88,22 @@ def _make_overview(root: Path) -> None:
         _png(root / relative)
 
 
+@pytest.fixture
+def overview_data(monkeypatch):
+    data = {}
+    for key in ("stress_delta_vth", "h2_delta_vth", "maximum_h2_response",
+                "recovery_delta_vth", "sensitivity", "h2_response_time"):
+        data[key] = {}
+        for condition in ("hot_storage", "85c_85rh", "cycles"):
+            baseline = 0.0 if key == "stress_delta_vth" else 10.0
+            data[key][condition] = pd.DataFrame({
+                "day_num": [0.0, 28.0], "value_mean": [baseline, 6.0],
+                "value_avdev": [0.0, 0.5], "n": [5, 5],
+            })
+    monkeypatch.setattr("sensorlab.report_builder._collect_overview_data", lambda _conditions: data)
+    return data
+
+
 def test_condition_normalization() -> None:
     assert canonical_condition("Hot storage") == "hot_storage"
     assert canonical_condition("125C Hot Storage") == "hot_storage"
@@ -118,7 +135,7 @@ def test_duplicate_condition_is_rejected(tmp_path: Path) -> None:
         discover_degradation_sources([first, second])
 
 
-def test_build_complete_results_outline(tmp_path: Path, monkeypatch) -> None:
+def test_build_complete_results_outline(tmp_path: Path, monkeypatch, overview_data) -> None:
     outline = tmp_path / "Results outline.docx"
     output = tmp_path / "Results outline - SensorLab.docx"
     supplement = tmp_path / "sensorlab-output"
@@ -131,7 +148,7 @@ def test_build_complete_results_outline(tmp_path: Path, monkeypatch) -> None:
     _make_condition(cycle_root, "cycles", "ESN1270_D1T2")
     monkeypatch.setattr(
         "sensorlab.report_builder.generate_overview_plots",
-        lambda _conditions, _output: (),
+        lambda _conditions, _output, **kwargs: (),
     )
 
     result = build_results_report(
@@ -147,7 +164,7 @@ def test_build_complete_results_outline(tmp_path: Path, monkeypatch) -> None:
     )
 
     built = Document(output)
-    assert len(built.tables) == 13
+    assert len(built.tables) == 16
     assert len(built.inline_shapes) == 54
     assert result.images_added == 54
     assert result.missing_images == ()
@@ -156,9 +173,18 @@ def test_build_complete_results_outline(tmp_path: Path, monkeypatch) -> None:
     assert manifest["conditions"]["cycles"]["representative_device"] == "ESN1270_D1T2"
     assert manifest["images_added"] == 54
     assert manifest["missing_images"] == []
+    assert len(manifest["endpoint_summary"]) == 18
+    assert result.endpoint_summary_path.is_file()
+    endpoints = pd.read_excel(result.endpoint_summary_path, sheet_name="Final checkpoint")
+    h2 = endpoints[endpoints.metric == "h2_delta_vth"]
+    assert h2.performance_loss_pct.tolist() == pytest.approx([40, 40, 40])
+    assert "40.0% decrease" in " ".join(
+        cell.text for table in built.tables for row in table.rows for cell in row.cells)
+    assert pd.read_excel(result.endpoint_summary_path, sheet_name="Plot source values").shape[0] == 36
+    assert Document(outline).tables == []
 
 
-def test_missing_report_plots_become_manifested_placeholders(tmp_path: Path, monkeypatch) -> None:
+def test_missing_report_plots_become_manifested_placeholders(tmp_path: Path, monkeypatch, overview_data) -> None:
     outline = tmp_path / "outline.docx"
     output = tmp_path / "output.docx"
     supplement = tmp_path / "supplement"
@@ -171,7 +197,7 @@ def test_missing_report_plots_become_manifested_placeholders(tmp_path: Path, mon
     _make_condition(cycles, "cycles", "ESN3_D1T1", complete=False)
     monkeypatch.setattr(
         "sensorlab.report_builder.generate_overview_plots",
-        lambda _conditions, _output: (),
+        lambda _conditions, _output, **kwargs: (),
     )
 
     result = build_results_report(outline, [normal, cycles], supplement, output)

@@ -11,7 +11,13 @@ def test_defaults_and_underscore_fallback():
     cfg = DegradationLabels()
     assert cfg.ylabel("Vth") == r"$\mathbf{V_{Th}}$ (V)"
     assert cfg.ylabel("delta_Vth_H2") == r"$\mathbf{|\Delta V_{Th}|}$ Sensing (V)"    # JG_H2 in volts, |·| label
-    assert cfg.deg_ylabel() == "%"
+    assert cfg.deg_ylabel("Vth") == r"$\mathbf{V_{Th}}$ Retention (%)"
+    assert cfg.deg_ylabel("response_pct") == "Response Retention (%)"
+    assert cfg.ylabel("max_resp_H2_pct") == "Response (%)"
+    assert cfg.deg_ylabel("max_resp_H2_pct") == "Response Retention (%)"
+    assert cfg.ylabel("max_resp_recovery_pct") == "Response Recovery (%)"
+    assert cfg.deg_ylabel("ppm_delta") == "H2 Response Delta Retention (%)"
+    assert cfg.deg_ylabel("SNR_off") == "SNR (off) Retention (%)"
     # not configured -> '_' becomes ' '
     assert cfg.ylabel("some_new_metric") == "Some New Metric"
 
@@ -29,6 +35,7 @@ def test_user_overrides_merge_over_defaults():
         titles={"average": "{label}"},                    # override one family
     )
     assert cfg.ylabel("Vth") == "Threshold [mV]"          # overridden
+    assert cfg.deg_ylabel("Vth") == "Threshold Retention (%)"
     assert cfg.ylabel("Ion") == "Ion (nA)"                # default kept
     assert cfg.title("Ion (nA)", "average", 0) == "Ion (nA)"
     assert cfg.title("Ion", "devices", 0) == "Ion — per device"   # default family kept
@@ -65,3 +72,10 @@ def test_load_falls_back_on_corrupt_file(tmp_path):
     p.write_text("{ this is not valid json", encoding="utf-8")
     cfg = load_degradation_labels(p)          # must not raise
     assert cfg.ylabel("Vth") == r"$\mathbf{V_{Th}}$ (V)"     # defaults
+
+
+def test_old_percent_config_uses_metric_degradation_label(tmp_path):
+    p = tmp_path / "labels.json"
+    p.write_text(json.dumps({"ylabels": {"@degradation": "%"}}), encoding="utf-8")
+    cfg = load_degradation_labels(p)
+    assert cfg.deg_ylabel("Vth") == r"$\mathbf{V_{Th}}$ Retention (%)"

@@ -3,19 +3,23 @@
 Operates on the per-timepoint masters (not raw data). Each timepoint's masters
 are tagged with a `day`; metrics are melted to a tidy long form, joined to the
 baseline day per device, and delta / degradation% are computed. An aggregate
-table gives mean +/- AVDEV across devices (per condition) for the average trend.
+table gives mean and sample SD across devices (per condition) for the average
+trend. AVDEV is retained for older consumers.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
+from pathlib import Path
 
 import pandas as pd
 
 _KEY_CANDIDATES = ["ESN", "TNumber", "Vbg", "segment", "state_Vj"]
 _NON_METRIC = {"n_points", "major", "day_num"}
 _DAY_RE = re.compile(r"(\d+(?:\.\d+)?)")
+ACTIVE_BATCH_PREFIX = ".sensorlab-analysis-batch-"
 
 
 def day_to_num(label: object) -> float:
@@ -27,11 +31,39 @@ def day_to_num(label: object) -> float:
     return float(m.group(1)) if m else float("nan")
 
 
+def active_analysis_root(folder: str | Path) -> Path:
+    """Use the newest complete batch, or the legacy analysis directory."""
+    base = Path(folder)
+    study_root = base.parent.parent
+    try:
+        relative = base.relative_to(study_root).as_posix()
+        manifests = sorted(study_root.glob(f"{ACTIVE_BATCH_PREFIX}*.json"), reverse=True)
+    except (OSError, ValueError):
+        manifests = []
+        relative = ""
+    for manifest in manifests:
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            entries = data.get("timepoints")
+            if data.get("version") != 1 or not isinstance(entries, dict):
+                continue
+            if not all(isinstance(rel, str) and rel and ".." not in Path(rel).parts
+                       and not Path(rel).is_absolute() and isinstance(name, str)
+                       and re.fullmatch(r"analysis_batch_[A-Za-z0-9_]+", name)
+                       and (study_root / rel / name).is_dir()
+                       for rel, name in entries.items()):
+                continue
+            if relative in entries:
+                return base / entries[relative]
+        except (OSError, ValueError, TypeError):
+            continue
+    legacy = base / "analysis"
+    return legacy if legacy.is_dir() else base
+
+
 def find_masters(folder: str):
-    """Yield (condition, mode, path) for every master under folder[/analysis]."""
-    root = os.path.join(folder, "analysis")
-    if not os.path.isdir(root):
-        root = folder
+    """Yield (condition, mode, path) from the active analysis output."""
+    root = str(active_analysis_root(folder))
     if not os.path.isdir(root):
         return
     for cond in sorted(os.listdir(root)):
@@ -66,7 +98,9 @@ def to_long(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     meta = [c for c in ("condition", "day", "day_num") if c in df.columns]
     metric_cols = [
         c for c in df.columns
-        if c not in id_cols + meta + list(_NON_METRIC) and pd.api.types.is_numeric_dtype(df[c])
+        if (c not in id_cols + meta + list(_NON_METRIC)
+            and not c.startswith("SS_fit_")
+            and pd.api.types.is_numeric_dtype(df[c]))
     ]
     long = df.melt(id_vars=id_cols + meta, value_vars=metric_cols, var_name="metric", value_name="value")
     return long, id_cols
@@ -100,16 +134,24 @@ def _avdev(s: pd.Series) -> float:
     return float((s - m).abs().mean())
 
 
+def _sample_sd(s: pd.Series) -> float:
+    """Sample standard deviation (ddof=1); undefined for fewer than two values."""
+    return float(s.std(ddof=1))
+
+
 def aggregate_tidy(tidy: pd.DataFrame, id_cols: list[str],
                    include_devices: set | None = None) -> pd.DataFrame:
-    """Mean +/- AVDEV across (included) devices, per condition (+ sub-device structure) per day."""
+    """Mean and sample SD across included devices, per condition and day."""
     tidy = filter_devices(tidy, include_devices)
     struct = [c for c in id_cols if c not in ("ESN", "TNumber")]   # keep Vbg/segment/state
     keys = ([c for c in ["condition"] if c in tidy.columns] + struct + ["metric", "day", "day_num"])
     return (tidy.groupby(keys, dropna=False)
-            .agg(value_mean=("value", "mean"), value_avdev=("value", _avdev),
-                 delta_mean=("delta", "mean"), delta_avdev=("delta", _avdev),
-                 deg_mean=("degradation_pct", "mean"), deg_avdev=("degradation_pct", _avdev),
+            .agg(value_mean=("value", "mean"), value_sd=("value", _sample_sd),
+                 value_avdev=("value", _avdev),
+                 delta_mean=("delta", "mean"), delta_sd=("delta", _sample_sd),
+                 delta_avdev=("delta", _avdev),
+                 deg_mean=("degradation_pct", "mean"), deg_sd=("degradation_pct", _sample_sd),
+                 deg_avdev=("degradation_pct", _avdev),
                  n=("value", "count"))
             .reset_index()
             .sort_values(keys).reset_index(drop=True))
@@ -140,7 +182,7 @@ def build_degradation(timepoints: list[tuple[object, str]],
                       ) -> dict[tuple[str, str], tuple[pd.DataFrame, pd.DataFrame]]:
     """timepoints: list of (day_label, folder). Returns {(condition, sheet): (tidy, agg)}.
 
-    `include_devices`: set of (ESN, TNumber) to include in the mean/AVDEV aggregate
+    `include_devices`: set of (ESN, TNumber) to include in the mean/SD aggregate
     (None = all). The tidy table always keeps every device.
     `exclude_cond_days`: set of (condition, day_label) to drop entirely from the
     study -- that condition on that day is left out of every sheet's tidy AND

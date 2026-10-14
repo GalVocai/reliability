@@ -67,6 +67,15 @@ _METRIC_SOURCES = (
     _MetricSource("h2_response_time", "SE_n04", "t90_response_s"),
 )
 
+_ENDPOINT_METRICS = (
+    ("stress_delta_vth", "Stress-induced delta Vth", "mV", "signed_shift"),
+    ("h2_delta_vth", "H2-induced delta Vth", "mV", "higher_is_better"),
+    ("maximum_h2_response", "H2 response", "%", "higher_is_better"),
+    ("recovery_delta_vth", "Recovery delta Vth", "mV", "signed_shift"),
+    ("sensitivity", "Sensitivity", "nA/ppm", "higher_is_better"),
+    ("h2_response_time", "H2 response time t90", "s", "lower_is_better"),
+)
+
 _OUTPUT_PLOTS = (
     _OutputPlot(
         "stress_delta_vth", "regular/stress_induced_deltaVTh.png",
@@ -82,11 +91,11 @@ _OUTPUT_PLOTS = (
     ),
     _OutputPlot(
         "maximum_h2_response", "regular/maximum_H2_response_vs_stress_time.png",
-        r"Maximum $\mathbf{H_2}$ Response (%)",
+        r"$\mathbf{H_2}$ Response (%)",
     ),
     _OutputPlot(
         "maximum_h2_response", "normalized/normalized_maximum_H2_response_vs_stress_time.png",
-        r"Normalized Maximum $\mathbf{H_2}$ Response", normalized=True,
+        r"Normalized $\mathbf{H_2}$ Response", normalized=True,
     ),
     _OutputPlot(
         "recovery_delta_vth", "regular/recovery_deltaVTh_vs_stress_time.png",
@@ -333,6 +342,62 @@ def _save_figure_pair(fig, png_path: Path, dpi: float) -> None:
         plt.close(fig)
 
 
+def summarize_overview_endpoints(
+    data: Mapping[str, Mapping[str, pd.DataFrame]],
+) -> pd.DataFrame:
+    """Last plotted population mean versus the same reference used by plots.
+
+    This is a ratio of aggregate means, not a mean of per-device percentage
+    changes. Each metric/condition uses its own last available checkpoint.
+    Signed voltage shifts have no scalar performance-loss interpretation;
+    their absolute change is reported even when the reference is zero.
+    """
+    rows = []
+    for condition in _CONDITION_ORDER:
+        for key, label, unit, direction in _ENDPOINT_METRICS:
+            frame = data[key][condition].sort_values("day_num")
+            if frame.empty or frame["day_num"].duplicated().any():
+                raise ValueError(f"Invalid overview checkpoints for {condition}/{key}.")
+            values = frame[["day_num", "value_mean", "value_avdev"]].to_numpy(float)
+            if not np.isfinite(values).all():
+                raise ValueError(f"Non-finite overview values for {condition}/{key}.")
+            first, last = frame.iloc[0], frame.iloc[-1]
+            baseline, final = float(first.value_mean), float(last.value_mean)
+            delta = final - baseline
+            ratio = final / baseline if abs(baseline) >= 1e-15 else None
+            change_pct = 100.0 * (ratio - 1.0) if ratio is not None else None
+            loss = None
+            if len(frame) < 2:
+                interpretation = "Only one checkpoint; change over time is unavailable."
+                ratio = change_pct = None
+            elif direction == "higher_is_better" and baseline > 0:
+                loss = -change_pct
+                interpretation = (f"{loss:.1f}% decrease" if loss >= 0
+                                  else f"{-loss:.1f}% increase")
+            elif direction == "lower_is_better" and baseline > 0:
+                interpretation = (f"{change_pct:.1f}% longer response time" if change_pct >= 0
+                                  else f"{-change_pct:.1f}% shorter response time")
+            elif direction == "signed_shift":
+                interpretation = f"Signed shift change: {delta:+.3g} {unit}"
+            else:
+                interpretation = "No performance-loss percentage for a nonpositive reference."
+            source = next((s for s in _METRIC_SOURCES if s.key == key), None)
+            rows.append({
+                "condition": condition, "condition_label": _CONDITION_STYLE[condition][0],
+                "metric": key, "metric_label": label, "unit": unit, "direction": direction,
+                "vbg_v": 4.0 if key == "stress_delta_vth" else (source.vbg if source else None),
+                "baseline_day": float(first.day_num), "last_day": float(last.day_num),
+                "baseline_value": baseline, "baseline_avdev": float(first.value_avdev),
+                "baseline_n": float(first.get("n", np.nan)),
+                "last_value": final, "last_avdev": float(last.value_avdev),
+                "last_n": float(last.get("n", np.nan)),
+                "absolute_change": delta, "normalized_final": ratio,
+                "relative_change_pct": change_pct, "performance_loss_pct": loss,
+                "interpretation": interpretation,
+            })
+    return pd.DataFrame(rows)
+
+
 def _plot_comparison(series: Mapping[str, pd.DataFrame], output: Path,
                      spec: _OutputPlot) -> None:
     style = load_style()
@@ -389,6 +454,8 @@ def _plot_comparison(series: Mapping[str, pd.DataFrame], output: Path,
 def generate_overview_plots(
     condition_directories: Mapping[str, str | Path],
     output_root: str | Path,
+    *,
+    data: Mapping[str, Mapping[str, pd.DataFrame]] | None = None,
 ) -> tuple[Path, ...]:
     """Regenerate all cross-test regular/normalised publication plots.
 
@@ -398,7 +465,8 @@ def generate_overview_plots(
     standard two-hour cycle duration).
     """
 
-    data = _collect_overview_data(condition_directories)
+    if data is None:
+        data = _collect_overview_data(condition_directories)
     publication_root = _publication_root(output_root)
     written: list[Path] = []
     for spec in _OUTPUT_PLOTS:

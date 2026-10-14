@@ -74,10 +74,10 @@ def test_sweep_evolution_writes_one_file_per_device_and_back_gate(tmp_path):
         assert len(curves) == 2                        # 2 days x 1 back-gate
     assert {next(iter({c["bg"] for c in curves})) for curves in calls} == {0, 4}
 
-    swdir = os.path.join(out, "degradation", "A", "JG_n03", "sweeps")
+    swdir = os.path.join(compare_mod.active_degradation_root(out), "A", "JG_n03", "sweeps")
     assert os.path.isfile(os.path.join(swdir, "ESN111_D1T1_Vbg0.png"))
     assert os.path.isfile(os.path.join(swdir, "ESN111_D1T1_Vbg4.png"))
-    collapse_dir = os.path.join(out, "degradation", "A", "JG_n03", "collapsed")
+    collapse_dir = os.path.join(compare_mod.active_degradation_root(out), "A", "JG_n03", "collapsed")
     assert os.path.isfile(os.path.join(collapse_dir, "ESN111_D1T1_Vbg0.png"))
     assert os.path.isfile(os.path.join(collapse_dir, "ESN111_D1T1_Vbg4.png"))
 

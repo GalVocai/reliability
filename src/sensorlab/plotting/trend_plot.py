@@ -9,8 +9,16 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import pandas as pd
 
 from .style import load_style
+
+
+def _spread(rows: pd.DataFrame, value: str) -> pd.Series:
+    """Use sample SD for new aggregates; accept older AVDEV-only tables."""
+    column = f"{value}_sd" if f"{value}_sd" in rows else f"{value}_avdev"
+    # SD is undefined with one valid device. Draw its mean without an error bar.
+    return pd.to_numeric(rows[column], errors="coerce").fillna(0).abs()
 
 
 def _savefig(fig, out_path: str, retries: int = 5, delay: float = 0.25, **kwargs) -> None:
@@ -19,8 +27,11 @@ def _savefig(fig, out_path: str, retries: int = 5, delay: float = 0.25, **kwargs
     On a cloud-synced folder (OneDrive/Dropbox), a directory created moments
     ago by os.makedirs can still race with the sync client's own filter
     driver -- the save then fails even though the folder "exists". Re-asserting
-    the parent dir and retrying briefly rides out that window.
+    the parent dir and retrying briefly rides out that window. Include the
+    full extent of long axis labels in the exported image.
     """
+    kwargs.setdefault("bbox_inches", "tight")
+    kwargs.setdefault("pad_inches", 0.15)
     try:
         for attempt in range(retries):
             try:
@@ -176,8 +187,8 @@ def plot_metric_average(agg_m, out_path: str, metric: str, struct_cols: list[str
                         value: str = "value", title: str = "", scale: float = 1.0,
                         unit: str = "", offset: float = 0.0, ylabel_override: str | None = None,
                         x_col: str = "day_num", xlabel: str = "Stress Time (days)",
-                        plot_mode: str = "line") -> str:
-    """Average +/- AVDEV vs day; one error-bar line per sub-device group (e.g. Vbg).
+                        plot_mode: str = "line", y_floor: float | None = None) -> str:
+    """Average +/- sample SD vs day; one line per sub-device group (e.g. Vbg).
 
     `scale`/`unit` convert the plotted quantity (e.g. V -> mV) for readability;
     the underlying aggregate table is untouched.
@@ -186,7 +197,9 @@ def plot_metric_average(agg_m, out_path: str, metric: str, struct_cols: list[str
     family uses scale=-1, offset=100 to show retention -- 100% at the baseline
     day, dropping as the metric degrades -- instead of 0%-at-baseline.
     `ylabel_override` sets the y-axis label verbatim (e.g. just "%"); when None
-    it is built from metric+unit with the "(mean +/- AVDEV)" suffix.
+    it is built from metric+unit.
+    `y_floor` fixes only the lower y-axis limit while leaving the automatically
+    calculated upper limit (including error bars) unchanged.
     """
     fig, ax = plt.subplots(figsize=(9, 5))
     style = load_style()
@@ -208,7 +221,8 @@ def plot_metric_average(agg_m, out_path: str, metric: str, struct_cols: list[str
         # the error bar is a magnitude -> use |scale|; a negative scale (the
         # delta_Vth sign flip) only reflects the mean, never the spread, and
         # matplotlib rejects a negative yerr.
-        ax.errorbar(g[x_col], g[f"{value}_mean"] * scale + offset, yerr=g[f"{value}_avdev"] * abs(scale),
+        ax.errorbar(g[x_col], g[f"{value}_mean"] * scale + offset,
+                    yerr=_spread(g, value) * abs(scale),
                     marker="o" if scatter else None,
                     markersize=_SCATTER_SIZE ** 0.5,
                     linestyle="none" if scatter else "-",
@@ -218,6 +232,8 @@ def plot_metric_average(agg_m, out_path: str, metric: str, struct_cols: list[str
     ax.set_ylabel(ylabel_override if ylabel_override is not None else ylabel)
     ax.set_title(title or f"{ylabel} - average")
     style.apply_publication(ax)
+    if y_floor is not None:
+        ax.set_ylim(bottom=float(y_floor))
     if struct_cols:
         style.apply_legend(ax, fontsize=8)
     fig.tight_layout()
@@ -292,7 +308,7 @@ def plot_grouped_average(agg_m, out_path: str, metrics: list[tuple[float, str]],
                          ylabel_override: str | None = None, abs_value: bool = False,
                          x_col: str = "day_num", xlabel: str = "Stress Time (days)",
                          plot_mode: str = "line") -> str:
-    """Average +/- AVDEV trends with several related metrics overlaid on one
+    """Average +/- sample SD trends with several related metrics overlaid on one
     axis (the average-family counterpart of plot_grouped_devices).
 
     `offset` / `ylabel_override`: see plot_metric_average (used identically by
@@ -312,7 +328,7 @@ def plot_grouped_average(agg_m, out_path: str, metrics: list[tuple[float, str]],
             yv = yv.abs()
         scatter = _scatter(plot_mode)
         # error bar is a magnitude -> |scale| (see plot_metric_average for why)
-        ax.errorbar(g[x_col], yv, yerr=g[f"{value}_avdev"] * abs(scale),
+        ax.errorbar(g[x_col], yv, yerr=_spread(g, value) * abs(scale),
                     marker="o" if scatter else None,
                     markersize=_SCATTER_SIZE ** 0.5,
                     linestyle="none" if scatter else "-",
@@ -338,7 +354,7 @@ def plot_response_vs_concentration(agg_m, out_path: str, ppm_items: list,
     """One error-bar curve PER DAY: y = <metric> mean vs x = ppm concentration.
 
     ``ppm_items`` = ``[(ppm, metric_name), ...]`` (the per-ppm response metrics,
-    e.g. 10ppm_delta / 25ppm_delta / ...). Error bars = AVDEV across devices.
+    e.g. 10ppm_delta / 25ppm_delta / ...). Error bars = sample SD across devices.
     Days are coloured with the same categorical palette / green ramp the trend
     plots use, so the figure reads as one system with the rest of the study."""
     fig, ax = plt.subplots(figsize=(9, 5))
@@ -356,7 +372,7 @@ def plot_response_vs_concentration(agg_m, out_path: str, ppm_items: list,
                 continue
             color, marker = _series(style, cmap, i, n)
             scatter = _scatter(plot_mode)
-            ax.errorbar(dd["ppm"], dd[f"{value}_mean"], yerr=dd[f"{value}_avdev"].abs(),
+            ax.errorbar(dd["ppm"], dd[f"{value}_mean"], yerr=_spread(dd, value),
                         marker="o" if scatter else None,
                         markersize=_SCATTER_SIZE ** 0.5,
                         linestyle="none" if scatter else "-",

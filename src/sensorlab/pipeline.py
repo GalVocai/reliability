@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections import defaultdict
 from typing import Callable
@@ -9,6 +10,7 @@ from typing import Callable
 import pandas as pd
 
 from .io import load_condition_cache, load_states, read_run, scan_result_files
+from .jg_calibration import JgCalibration, apply_jg_calibration
 from .io.device_map import ConditionCache
 from .io.master_writer import write_master
 from .measurements import (
@@ -38,7 +40,8 @@ from .plotting import (
 from .util import sanitize_filename
 
 
-def load_folder(folder: str, log: Callable[[str], None] | None = None) -> list[Run]:
+def load_folder(folder: str, log: Callable[[str], None] | None = None,
+                jg_calibration: JgCalibration | None = None) -> list[Run]:
     """Read every result file and classify it by test type. The script file's
     States sheet (per-channel working points) is attached to every run.
 
@@ -48,6 +51,8 @@ def load_folder(folder: str, log: Callable[[str], None] | None = None) -> list[R
     every lookup is done by device identity — immune to renumbering."""
     emit = log or (lambda _m: None)
     runs = [read_run(p) for p in scan_result_files(folder)]
+    if jg_calibration is not None:
+        runs = [apply_jg_calibration(run, jg_calibration) for run in runs]
     by_num = load_states(folder)
     states: dict = {}
     if by_num and runs:
@@ -132,6 +137,8 @@ def analyze_folder(
     make_plots: bool = True,
     day: str = "",
     log: Callable[[str], None] | None = None,
+    jg_calibration: JgCalibration | None = None,
+    ss_window_nA: tuple[float, float] | None = None,
 ) -> dict[str, list[str]]:
     """Run the analyzers and write outputs split by condition.
 
@@ -144,7 +151,9 @@ def analyze_folder(
     because a locked master falls back to a timestamped sibling.
     """
     emit = log or (lambda _m: None)
-    runs = load_folder(folder, log=emit)
+    if ss_window_nA is not None and jg_calibration is None:
+        raise ValueError("Fixed-current SS requires the enabled JG calibration")
+    runs = load_folder(folder, log=emit, jg_calibration=jg_calibration)
     grouped = group_by_kind(runs)
     conditions = conditions or load_condition_cache()
     style = load_style()
@@ -249,13 +258,15 @@ def analyze_folder(
     jg_runs = grouped.get(MajorKind.JG, [])
     if jg_runs:
         emit("JG: analyzing" + (" + plotting" if make_plots else ""))
-        finish("JG", {f"JG_n{r.major:02d}": analyze_jg_run(r, conditions) for r in jg_runs})
+        finish("JG", {f"JG_n{r.major:02d}": analyze_jg_run(
+            r, conditions, ss_window_nA=ss_window_nA) for r in jg_runs})
         if make_plots:
             for run in jg_runs:
                 for ch in run.channels:
                     plot_jg_device(run, ch, os.path.join(_dev_dir(out_dir, conditions, ch, "JG"),
                                    sanitize_filename(f"n{run.major:02d}_{ch.label}.png")),
-                                   experiment_type=run.kind.value, day=day, style=style)
+                                   experiment_type=run.kind.value, day=day, style=style,
+                                   ss_window_nA=ss_window_nA)
 
     # JG_H2 -> air (n03) vs H2 (n05) vs recovery (n06)
     if jg_runs:
@@ -303,5 +314,13 @@ def analyze_folder(
                         plot_zozo_device(run, ch, os.path.join(_dev_dir(out_dir, conditions, ch, "ZOZO"),
                                          sanitize_filename(f"{ch.label}.png")), experiment_type=run.kind.value, day=day, style=style)
 
+    calibration_snapshot = os.path.join(out_dir, "jg_calibration_used.json")
+    if jg_calibration is not None and jg_runs:
+        snapshot = jg_calibration.as_json_dict()
+        snapshot["ss_window_nA"] = list(ss_window_nA) if ss_window_nA is not None else None
+        with open(calibration_snapshot, "w", encoding="utf-8") as file:
+            json.dump(snapshot, file, indent=2, ensure_ascii=False)
+    elif os.path.isfile(calibration_snapshot):
+        os.remove(calibration_snapshot)
     emit("Done. Modes: " + ", ".join(written))
     return written

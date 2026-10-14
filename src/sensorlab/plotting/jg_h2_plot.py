@@ -6,6 +6,8 @@ Each back-gate contributes an air (n03) and a 100 ppm H2 (n05) curve. Recovery
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import matplotlib
 
 matplotlib.use("Agg")
@@ -136,4 +138,75 @@ def plot_jg_h2_device(air: Run, h2: Run, ch: Channel, out_path: str,
     fig.tight_layout()
     fig.savefig(out_path, dpi=style.dpi)
     plt.close(fig)
+    return out_path
+
+
+def plot_jg_h2_baseline_vs_end(air_baseline: Run, h2_baseline: Run,
+                               air_end: Run, h2_end: Run, ch: Channel,
+                               vbg: float, end_label: str, out_path: str,
+                               style: StyleConfig = DEFAULT_STYLE,
+                               protocol: Protocol = DEFAULT,
+                               show_arrows: bool = True,
+                               legend_loc: str = "upper left") -> str:
+    """Overlay one device/back-gate's air and H2 curves at two checkpoints."""
+
+    def crossing_x(x, y, current):
+        """First upward crossing, interpolated on the log-current axis."""
+        for i in range(len(x) - 1):
+            if 0 < y[i] < current <= y[i + 1]:
+                fraction = ((np.log10(current) - np.log10(y[i]))
+                            / (np.log10(y[i + 1]) - np.log10(y[i])))
+                return float(x[i] + fraction * (x[i + 1] - x[i]))
+        return None
+
+    series = (
+        ("air baseline", air_baseline),
+        ("100 ppm H2 baseline", h2_baseline),
+        (f"air {end_label}", air_end),
+        (f"100ppm H2 {end_label}", h2_end),
+    )
+    fig, ax = plt.subplots(figsize=(8.5, 5))
+    try:
+        all_x = []
+        plotted_curves = []
+        for index, (label, run) in enumerate(series):
+            channel = next((item for item in run.channels
+                            if (item.esn, item.tnumber) == (ch.esn, ch.tnumber)), None)
+            if channel is None:
+                raise ValueError(f"{ch.label} is missing from {run.path}")
+            data = run.parts()[protocol.jg.h2_part]
+            groups = dict(back_gate_groups(data))
+            if vbg not in groups:
+                raise ValueError(f"Vbg={vbg:g} is missing from {run.path}")
+            group = groups[vbg]
+            x, y = _clean_curve(group["Vj"].to_numpy(float),
+                                group[channel.column].to_numpy(float))
+            x, y = abs_despiked(x, y)
+            all_x.extend(x)
+            plotted_curves.append((x, y))
+            ax.plot(x, y, color=style.pub_color(0 if index < 2 else 2),
+                    lw=style.linewidth, ls="--" if index % 2 else "-",
+                    label=label)
+        if show_arrows:
+            for air_index, h2_index, current in ((0, 1, 1000.0), (2, 3, 3000.0)):
+                air_x = crossing_x(*plotted_curves[air_index], current)
+                h2_x = crossing_x(*plotted_curves[h2_index], current)
+                if air_x is not None and h2_x is not None:
+                    ax.annotate("", xy=(h2_x, current), xytext=(air_x, current),
+                                arrowprops=dict(arrowstyle="-|>", color="#d62728",
+                                                lw=1.8, mutation_scale=13,
+                                                shrinkA=0, shrinkB=0),
+                                zorder=6)
+        ax.set_yscale("log")
+        ax.set_xlim(min(all_x), max(all_x))
+        ax.set_xlabel(X_VJ)
+        ax.set_ylabel(Y_ID)
+        style.apply_axes(ax, "JG_H2", default_log=True)
+        style.apply_publication(ax)
+        style.apply_legend(ax, fontsize=7, loc=legend_loc)
+        fig.tight_layout()
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_path, dpi=style.dpi, bbox_inches="tight", pad_inches=0.15)
+    finally:
+        plt.close(fig)
     return out_path

@@ -1,4 +1,4 @@
-"""Unit test for the degradation math (delta, degradation%, mean/AVDEV)."""
+"""Unit test for the degradation math (delta, retention, mean/sample SD)."""
 
 import math
 
@@ -37,6 +37,9 @@ def test_aggregate_mean_avdev():
     assert math.isclose(row["deg_avdev"], 0.0, abs_tol=1e-9)
     assert math.isclose(row["value_mean"], -1.35, abs_tol=1e-9)              # (-0.9 + -1.8)/2
     assert math.isclose(row["value_avdev"], 0.45, abs_tol=1e-9)
+    assert math.isclose(row["value_sd"], 0.45 * math.sqrt(2), abs_tol=1e-9)
+    assert math.isclose(row["delta_sd"], 0.05 * math.sqrt(2), abs_tol=1e-9)
+    assert math.isclose(row["deg_sd"], 0.0, abs_tol=1e-9)
 
 
 def test_aggregate_include_devices():
@@ -45,3 +48,4 @@ def test_aggregate_include_devices():
     row = agg[(agg["day_num"] == 7.0) & (agg["metric"] == "Vth")].iloc[0]
     assert row["n"] == 1                                          # only the included device
     assert math.isclose(row["value_mean"], -0.9, abs_tol=1e-9)   # T11's day-7 value only
+    assert math.isnan(row["value_sd"])

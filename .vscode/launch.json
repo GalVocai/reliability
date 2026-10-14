@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run SensorLab",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/sensorlab_gui.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ]
+}

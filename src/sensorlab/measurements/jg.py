@@ -68,6 +68,36 @@ def _subthreshold_swing(vj: np.ndarray, idv: np.ndarray, noise: float, ss_upper:
     return float("nan")
 
 
+def _fixed_current_ss(vj: np.ndarray, idv: np.ndarray,
+                      window_nA: tuple[float, float]) -> tuple[float, int, float, float, str]:
+    """Fit log10(Id) against Vj within one common positive-current window.
+
+    Return SS, point count, R², current span in decades, and a QC status.
+    A missing SS is deliberate when the measured points cannot support the
+    proposed subthreshold fit; interpolation never invents extra points.
+    """
+    low, high = map(float, window_nA)
+    if not 0 < low < high:
+        raise ValueError("SS current window must have 0 < lower < upper nA")
+    use = np.isfinite(vj) & np.isfinite(idv) & (idv >= low) & (idv <= high)
+    n = int(np.count_nonzero(use))
+    if n < 4:
+        return float("nan"), n, float("nan"), float("nan"), "too_few_points"
+    x = vj[use]
+    y = np.log10(idv[use])
+    span = float(np.ptp(y))
+    if np.ptp(x) <= 0 or span < 0.3:
+        return float("nan"), n, float("nan"), span, "insufficient_current_span"
+    slope, intercept = np.polyfit(x, y, 1)
+    residual = y - (slope * x + intercept)
+    r2 = float(1 - np.sum(residual ** 2) / np.sum((y - np.mean(y)) ** 2))
+    if slope <= 0:
+        return float("nan"), n, r2, span, "nonpositive_slope"
+    if r2 < 0.95:
+        return float("nan"), n, r2, span, "low_linearity"
+    return float(1000 / slope), n, r2, span, "ok"
+
+
 def _gm_max(vj: np.ndarray, idv: np.ndarray) -> float:
     if len(vj) < 3:
         return float("nan")
@@ -102,7 +132,8 @@ def _vth_second_derivative(vj: np.ndarray, idv: np.ndarray) -> float:
     return float(vj[i])
 
 
-def jg_curve_metrics(vj: np.ndarray, idv: np.ndarray, protocol: Protocol = DEFAULT) -> dict[str, float]:
+def jg_curve_metrics(vj: np.ndarray, idv: np.ndarray, protocol: Protocol = DEFAULT,
+                     ss_window_nA: tuple[float, float] | None = None) -> dict[str, float]:
     p = protocol.jg
     vj, idv = _clean_curve(vj, idv)
     if len(vj) < 3:
@@ -110,7 +141,7 @@ def jg_curve_metrics(vj: np.ndarray, idv: np.ndarray, protocol: Protocol = DEFAU
     ion = float(idv[-1])                      # on end (Vj = 0.3)
     ioff = float(idv[0])                      # off end (Vj = -2.8)
     ratio = ion / max(ioff, p.noise_floor_nA)
-    return {
+    metrics = {
         "Vth": _vth_constant_current(vj, idv, p.vth_target_nA, p.vth_onset_guard),
         "Vth_d2": _vth_second_derivative(vj, idv),
         "SS": _subthreshold_swing(vj, idv, p.noise_floor_nA, p.ss_upper_frac * ion),
@@ -120,6 +151,11 @@ def jg_curve_metrics(vj: np.ndarray, idv: np.ndarray, protocol: Protocol = DEFAU
         "Ion_Ioff": ratio,
         "SNR_off": _snr_off(idv),
     }
+    if ss_window_nA is not None:
+        ss, n, r2, span, status = _fixed_current_ss(vj, idv, ss_window_nA)
+        metrics.update(SS=ss, SS_fit_n=n, SS_fit_R2=r2,
+                       SS_fit_span_dec=span, SS_fit_status=status)
+    return metrics
 
 
 def _jg_flags(m: dict[str, float], protocol: Protocol) -> str:
@@ -143,6 +179,7 @@ def analyze_jg_run(
     run: Run,
     conditions: ConditionCache | None = None,
     protocol: Protocol = DEFAULT,
+    ss_window_nA: tuple[float, float] | None = None,
 ) -> pd.DataFrame:
     data = run.parts()[relevant_part(run, protocol)]
     gate_groups = back_gate_groups(data)
@@ -155,7 +192,8 @@ def analyze_jg_run(
             "condition": conditions.get(ch.esn) if conditions else "",
         }
         for vb, sub in gate_groups:
-            m = jg_curve_metrics(sub["Vj"].to_numpy(float), sub[ch.column].to_numpy(float), protocol)
+            m = jg_curve_metrics(sub["Vj"].to_numpy(float), sub[ch.column].to_numpy(float),
+                                 protocol, ss_window_nA=ss_window_nA)
             for k, v in m.items():
                 row[f"{k}_bg{vb}"] = v
             row[f"flags_bg{vb}"] = _jg_flags(m, protocol)

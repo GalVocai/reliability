@@ -5,7 +5,9 @@ import os
 import pandas as pd
 
 from sensorlab.compare import (_bg_groups, _sel_delta_items, _steps_ppm_groups,
-                               _steps_sensitivity, discover_timepoints)
+                               _steps_sensitivity, _write_vbg_retention,
+                               discover_timepoints)
+from sensorlab.degradation_labels import DegradationLabels
 
 
 def test_sel_delta_items_honours_ppm_selection():
@@ -18,6 +20,8 @@ def test_sel_delta_items_honours_ppm_selection():
     # selection excludes 1000 -> stays in the linear regime
     assert _sel_delta_items(ppm_groups, {10, 25, 100}) == [
         (10.0, "10ppm_delta"), (25.0, "25ppm_delta"), (100.0, "100ppm_delta")]
+    # An explicitly empty GUI selection means use none, not use all.
+    assert _sel_delta_items(ppm_groups, set()) == []
 
 
 def test_steps_sensitivity_is_the_linear_slope_nA_per_ppm():
@@ -44,7 +48,7 @@ def test_steps_sensitivity_honours_the_device_filter():
         {"ESN": "2", "TNumber": "11", "day_num": 0.0, "metric": "100ppm_delta", "value": 5000.0},
     ])
     items = [(10.0, "10ppm_delta"), (100.0, "100ppm_delta")]
-    # keep only device 1 -> only its slope (5), the excluded device never counts
+    # keep only device 1 -> only its 5 nA/ppm slope; excluded device never counts
     out = _steps_sensitivity(filter_devices(tidy, {("1", "11")}), items)
     assert set(zip(out["ESN"].astype(str), out["TNumber"].astype(str))) == {("1", "11")}
     assert abs(out.iloc[0]["value"] - 5.0) < 1e-9
@@ -88,6 +92,49 @@ def test_bg_groups_ignores_a_lone_metric_with_no_pair():
     # a single Vth_bg0 (no matching Vth_bg4) has nothing to overlay -- stays
     # out of the grouped plots and falls through to the normal per-metric one
     assert _bg_groups(["Vth_bg0", "Ion_bg4"]) == {}
+
+
+def test_vbg_retention_exports_separate_curves_without_vbg_text(tmp_path, monkeypatch):
+    from sensorlab import compare
+
+    calls = []
+    monkeypatch.setattr(compare, "plot_metric_average",
+                        lambda rows, path, metric, struct, **kwargs:
+                        calls.append((rows.copy(), path, metric, struct, kwargs)))
+    agg = pd.DataFrame({
+        "Vbg": [0, 0, 4, 4], "metric": ["max_resp_H2_pct"] * 4,
+        "day_num": [0, 28, 0, 28],
+        "deg_mean": [0, 30, 0, 20], "deg_avdev": [0, 3, 0, 2],
+    })
+    _write_vbg_retention(agg, str(tmp_path), "max_resp_H2_pct", "max_resp_H2_pct",
+                         DegradationLabels(), 0, {"x_col": "day_num"})
+
+    assert [os.path.basename(call[1]) for call in calls] == [
+        "max_resp_H2_pct_Vbg0.png", "max_resp_H2_pct_Vbg4.png"]
+    assert [set(call[0]["Vbg"]) for call in calls] == [{0}, {4}]
+    assert all(call[3] == [] for call in calls)
+    assert all(call[4]["ylabel_override"] == "Response Retention (%)" for call in calls)
+    assert all("Vbg" not in call[4]["title"] for call in calls)
+
+
+def test_vbg_retention_splits_suffix_metrics(tmp_path, monkeypatch):
+    from sensorlab import compare
+
+    calls = []
+    monkeypatch.setattr(compare, "plot_metric_average",
+                        lambda rows, path, metric, struct, **kwargs:
+                        calls.append((rows.copy(), path, metric, struct, kwargs)))
+    agg = pd.DataFrame({
+        "metric": ["Vth_bg0", "Vth_bg4"], "day_num": [28, 28],
+        "deg_mean": [30, 20], "deg_avdev": [3, 2],
+    })
+    _write_vbg_retention(agg, str(tmp_path), "Vth", "Vth", DegradationLabels(),
+                         0, {"x_col": "day_num"},
+                         bg_items=[(0, "Vth_bg0"), (4, "Vth_bg4")])
+
+    assert [os.path.basename(call[1]) for call in calls] == ["Vth_Vbg0.png", "Vth_Vbg4.png"]
+    assert [set(call[0]["metric"]) for call in calls] == [{"Vth_bg0"}, {"Vth_bg4"}]
+    assert all("Vbg" not in call[4]["ylabel_override"] for call in calls)
 
 
 def _mk(*parts):

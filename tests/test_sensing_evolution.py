@@ -68,7 +68,7 @@ def test_se_sensing_evolution_writes_one_file_per_device_with_all_days(tmp_path)
     assert {c["day_num"] for c in curves} == {0.0, 2.0}
     assert len(curves) == 2   # one curve per day, no back-gate dimension
 
-    png = os.path.join(out, "degradation", "A", "SE_n04", "sensing", "ESN111_D1T1.png")
+    png = os.path.join(compare_mod.active_degradation_root(out), "A", "SE_n04", "sensing", "ESN111_D1T1.png")
     assert os.path.isfile(png)
 
 

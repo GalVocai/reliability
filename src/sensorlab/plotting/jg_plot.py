@@ -17,12 +17,14 @@ from .style import DEFAULT_STYLE, StyleConfig
 
 
 def render_jg(ax, run: Run, ch: Channel, style: StyleConfig = DEFAULT_STYLE,
-              protocol: Protocol = DEFAULT, experiment_type: str = "", day: str = "") -> None:
+              protocol: Protocol = DEFAULT, experiment_type: str = "", day: str = "",
+              ss_window_nA: tuple[float, float] | None = None) -> None:
     data = run.parts()[relevant_part(run, protocol)]
     shown = [(vb, sub) for vb, sub in back_gate_groups(data) if style.shows(vb)]
     for i, (vb, sub) in enumerate(shown):
         vj, idv = _clean_curve(sub["Vj"].to_numpy(float), sub[ch.column].to_numpy(float))
-        m = jg_curve_metrics(sub["Vj"].to_numpy(float), sub[ch.column].to_numpy(float), protocol)
+        m = jg_curve_metrics(sub["Vj"].to_numpy(float), sub[ch.column].to_numpy(float),
+                             protocol, ss_window_nA=ss_window_nA)
         px, py = abs_despiked(vj, idv)
         if style.legend_metrics:
             lbl = f"BG={vb} (V): Vth={m['Vth']:.2f} SS={m['SS']:.0f} Ion/Ioff={m['Ion_Ioff']:.0f}"
@@ -46,9 +48,11 @@ def render_jg(ax, run: Run, ch: Channel, style: StyleConfig = DEFAULT_STYLE,
 
 
 def plot_jg_device(run: Run, ch: Channel, out_path: str, protocol: Protocol = DEFAULT,
-                   experiment_type: str = "", day: str = "", style: StyleConfig = DEFAULT_STYLE) -> str:
+                   experiment_type: str = "", day: str = "", style: StyleConfig = DEFAULT_STYLE,
+                   ss_window_nA: tuple[float, float] | None = None) -> str:
     fig, ax = plt.subplots(figsize=(8, 5))
-    render_jg(ax, run, ch, style, protocol, experiment_type, day)
+    render_jg(ax, run, ch, style, protocol, experiment_type, day,
+              ss_window_nA=ss_window_nA)
     fig.tight_layout()
     fig.savefig(out_path, dpi=style.dpi)
     plt.close(fig)

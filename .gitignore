@@ -23,3 +23,10 @@ desktop.ini
 
 # Keep golden fixtures tracked (they are the regression ground truth):
 !tests/fixtures/
+# Local runtimes, backups, and generated artifacts
+.python/
+.venv-backup-*/
+.tmp_sensorlab_mapping/
+output/
+shortcut-backups/
+-VOCAIPC022.gitignore

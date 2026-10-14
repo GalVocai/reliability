@@ -8,6 +8,7 @@ import pytest
 from sensorlab.plotting.overview_plot import (
     _collect_overview_data,
     generate_overview_plots,
+    summarize_overview_endpoints,
 )
 
 
@@ -105,6 +106,12 @@ def test_overview_is_regenerated_from_all_current_checkpoints(tmp_path: Path) ->
     assert sensitivity.loc[0, "value_mean"] == pytest.approx(3.0)
     assert sensitivity.loc[21, "value_mean"] == pytest.approx(2.58)
     assert sensitivity.loc[21, "n"] == 2
+    summary = summarize_overview_endpoints(data)
+    endpoint = summary[(summary.condition == "cycles") & (summary.metric == "sensitivity")].iloc[0]
+    assert endpoint.last_day == 21
+    assert endpoint.last_value == pytest.approx(2.58)
+    assert endpoint.normalized_final == pytest.approx(0.86)
+    assert endpoint.performance_loss_pct == pytest.approx(14.0)
 
     generated = generate_overview_plots(conditions, tmp_path / "output")
 
@@ -113,3 +120,53 @@ def test_overview_is_regenerated_from_all_current_checkpoints(tmp_path: Path) ->
     assert all(path.with_suffix(".pdf").is_file() for path in generated)
     required = tmp_path / "output" / "publication_plots" / "regular" / "stress_induced_deltaVTh.png"
     assert required in generated
+
+
+def _endpoint_data():
+    data = {}
+    for key in ("stress_delta_vth", "h2_delta_vth", "maximum_h2_response",
+                "recovery_delta_vth", "sensitivity", "h2_response_time"):
+        data[key] = {}
+        for condition, last_day in (("hot_storage", 28), ("85c_85rh", 35), ("cycles", 21)):
+            first, last = {
+                "stress_delta_vth": (0, 1100), "recovery_delta_vth": (20, -10),
+                "h2_response_time": (10, 12),
+            }.get(key, (100, 60))
+            # Unsorted input and different final days must not select the wrong row.
+            data[key][condition] = pd.DataFrame({
+                "day_num": [last_day, 0, 7], "value_mean": [last, first, 75],
+                "value_avdev": [1, 2, 3], "n": [4, 6, 5],
+            })
+    return data
+
+
+def test_endpoint_percentages_directions_zero_reference_and_last_day():
+    result = summarize_overview_endpoints(_endpoint_data()).set_index(["condition", "metric"])
+    assert result.loc[("hot_storage", "maximum_h2_response")].metric_label == "H2 response"
+    h2 = result.loc[("85c_85rh", "h2_delta_vth")]
+    assert h2.last_day == 35
+    assert h2.last_n == 4
+    assert h2.normalized_final == pytest.approx(0.6)
+    assert h2.relative_change_pct == pytest.approx(-40)
+    assert h2.performance_loss_pct == pytest.approx(40)
+    timing = result.loc[("cycles", "h2_response_time")]
+    assert timing.last_day == 21
+    assert timing.relative_change_pct == pytest.approx(20)
+    assert timing.interpretation == "20.0% longer response time"
+    assert pd.isna(timing.performance_loss_pct)
+    stress = result.loc[("hot_storage", "stress_delta_vth")]
+    assert stress.absolute_change == 1100
+    assert pd.isna(stress.relative_change_pct)
+    recovery = result.loc[("hot_storage", "recovery_delta_vth")]
+    assert recovery.relative_change_pct == pytest.approx(-150)
+    assert pd.isna(recovery.performance_loss_pct)
+
+
+def test_endpoint_single_checkpoint_does_not_claim_zero_degradation():
+    data = _endpoint_data()
+    data["h2_delta_vth"]["cycles"] = data["h2_delta_vth"]["cycles"].iloc[:1]
+    result = summarize_overview_endpoints(data)
+    row = result[(result.condition == "cycles") & (result.metric == "h2_delta_vth")].iloc[0]
+    assert pd.isna(row.relative_change_pct)
+    assert pd.isna(row.normalized_final)
+    assert "Only one checkpoint" in row.interpretation

@@ -22,10 +22,14 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from tkinter import colorchooser
 
-from .compare import discover_timepoints, run_degradation
+from .batch import analyze_all_timepoints, discover_raw_timepoints
+from .compare import active_degradation_root, discover_timepoints, run_degradation
 from .degradation import (conditions_in_folder, day_to_num, devices_in_folder,
                           find_masters)
 from .io.device_map import load_condition_cache
+from .jg_calibration import JgCalibration, import_blank_sweeps
+from .jmp_export import (ExportSource, MetricOption, load_export_source,
+                         make_export_tables, write_export)
 from .model import MajorKind
 from .pipeline import all_esns, analyze_folder, group_by_kind, load_folder
 from .plotting import (
@@ -100,6 +104,8 @@ class SensorLabApp(tk.Tk):
         self.configure(bg=BG)
         _setup_style(self)
         self.folder: str | None = None
+        self.batch_parent: str | None = None
+        self.calibration_path: str | None = None
         self.cache = load_condition_cache()
         self.cond_vars: dict[str, tk.StringVar] = {}
         self._queue: queue.Queue[str] = queue.Queue()
@@ -116,6 +122,8 @@ class SensorLabApp(tk.Tk):
         f1 = ttk.LabelFrame(body, text="  1 · Results folder  ", padding=10)
         f1.pack(fill="x", pady=(0, 10))
         ttk.Button(f1, text="Select folder…", command=self._pick_folder).pack(side="left")
+        ttk.Button(f1, text="Select all timepoints…", command=self._pick_parent).pack(
+            side="left", padx=(6, 0))
         self.folder_lbl = ttk.Label(f1, text="no folder selected", style="Muted.TLabel")
         self.folder_lbl.pack(side="left", padx=12)
 
@@ -124,9 +132,35 @@ class SensorLabApp(tk.Tk):
         f2.pack(fill="x", pady=(0, 10))
         ttk.Label(f2, text="Day # :").pack(side="left")
         self.day_var = tk.StringVar(value="baseline")
-        ttk.Entry(f2, textvariable=self.day_var, width=16).pack(side="left", padx=(4, 20))
+        self.day_entry = ttk.Entry(f2, textvariable=self.day_var, width=16)
+        self.day_entry.pack(side="left", padx=(4, 20))
         self.plots_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(f2, text="Generate plots", variable=self.plots_var).pack(side="left")
+
+        correction = ttk.Frame(body)
+        correction.pack(fill="x", pady=(0, 10))
+        self.jg_correction_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(correction, text="Apply JG blank-current correction",
+                        variable=self.jg_correction_var,
+                        command=self._sync_jg_calibration_controls).pack(side="left")
+        ttk.Button(correction, text="Calibration JSON…",
+                   command=self._pick_calibration).pack(side="left", padx=(10, 0))
+        ttk.Button(correction, text="Import blank-card data…",
+                   command=self._import_calibration).pack(side="left", padx=(6, 0))
+        self.calibration_lbl = ttk.Label(correction, text="none selected",
+                                         style="Muted.TLabel")
+        self.calibration_lbl.pack(side="left", padx=(8, 0))
+        ss_row = ttk.Frame(body)
+        ss_row.pack(fill="x", pady=(0, 10))
+        ttk.Label(ss_row, text="Fixed-current SS window (nA):").pack(side="left")
+        self.ss_low_var = tk.StringVar(value="20")
+        self.ss_high_var = tk.StringVar(value="100")
+        self.ss_low_entry = ttk.Entry(ss_row, textvariable=self.ss_low_var, width=7)
+        self.ss_low_entry.pack(side="left", padx=(5, 2))
+        ttk.Label(ss_row, text="to").pack(side="left")
+        self.ss_high_entry = ttk.Entry(ss_row, textvariable=self.ss_high_var, width=7)
+        self.ss_high_entry.pack(side="left", padx=(2, 0))
+        self._sync_jg_calibration_controls()
 
         # 3. conditions
         f3 = ttk.LabelFrame(body, text="  3 · Condition per card  (filled once, remembered)  ", padding=10)
@@ -145,7 +179,7 @@ class SensorLabApp(tk.Tk):
         ttk.Button(actions, text="Compare timepoints (degradation)…",
                    command=lambda: DegradationWindow(self)).pack(side="left", padx=10)
         ttk.Button(actions, text="Plot studio…",
-                   command=lambda: PlotStudio(self, self.folder)).pack(side="left")
+                   command=self._open_plot_studio).pack(side="left")
         ttk.Button(actions, text="Results report…",
                    command=lambda: ResultsReportWindow(self)).pack(side="left", padx=(10, 0))
 
@@ -169,11 +203,106 @@ class SensorLabApp(tk.Tk):
             messagebox.showwarning("No data", "No result files (…_n0X_…) found in this folder.")
             return
         self.folder = folder
+        self.batch_parent = None
+        self.day_entry.config(state="normal")
         self.folder_lbl.config(text=folder, style="TLabel")
         esns = all_esns(runs)
         self._log(f"Loaded {len(runs)} majors; {len(esns)} cards (ESN).")
         self._build_condition_rows(esns)
         self.run_btn.config(state="normal")
+
+    def _pick_parent(self) -> None:
+        parent = filedialog.askdirectory(title="Select parent folder containing baseline / 2D / 7D …")
+        if not parent:
+            return
+        try:
+            found = discover_raw_timepoints(parent)
+            if not found:
+                raise ValueError("No raw result folders found under the selected parent")
+            runs = load_folder(str(found[0][1]))
+        except Exception as exc:
+            messagebox.showerror("Load error", str(exc))
+            return
+        self.batch_parent = parent
+        self.folder = str(found[0][1])
+        self.folder_lbl.config(text=f"{parent} ({len(found)} timepoints)", style="TLabel")
+        self.day_entry.config(state="disabled")
+        self._build_condition_rows(all_esns(runs))
+        self._log("Auto-detected raw timepoints: " + ", ".join(day for day, _ in found))
+        self._log("Batch results will be saved in new versioned analysis folders; "
+                  "existing analysis folders stay unchanged.")
+        self.run_btn.config(state="normal")
+
+    def _pick_calibration(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select generated JG calibration JSON",
+            filetypes=[("JSON files", "*.json"), ("All files", "*")])
+        if not path:
+            return
+        try:
+            calibration = JgCalibration.from_json(path)
+        except Exception as exc:
+            messagebox.showerror("Calibration error", str(exc))
+            return
+        self.calibration_path = path
+        self.calibration_lbl.config(text=f"{Path(path).name} ({len(calibration.assignments)} devices)",
+                                    style="TLabel")
+
+    def _import_calibration(self) -> None:
+        workbooks = filedialog.askopenfilenames(
+            title="Select JG blank-current workbook(s) with device ESN/TNumber",
+            filetypes=[("Excel workbooks", "*.xlsx"), ("All files", "*")])
+        if not workbooks:
+            return
+        output = filedialog.asksaveasfilename(
+            title="Save JG calibration JSON",
+            initialdir=str(Path.home() / ".sensorlab"),
+            initialfile="jg_calibration.json", defaultextension=".json",
+            filetypes=[("JSON files", "*.json")])
+        if not output:
+            return
+        try:
+            calibration = import_blank_sweeps(list(workbooks))
+            Path(output).parent.mkdir(parents=True, exist_ok=True)
+            calibration.save_json(output)
+        except Exception as exc:
+            messagebox.showerror("Calibration import error", str(exc))
+            return
+        self.calibration_path = output
+        self.calibration_lbl.config(text=f"{Path(output).name} ({len(calibration.assignments)} devices)",
+                                    style="TLabel")
+        self._log(f"Imported {len(calibration.offsets)} JG offsets for "
+                  f"{len(calibration.assignments)} devices -> {output}")
+        reference = calibration.reference_conditions
+        if reference.get("type") == "fixed_state":
+            self._log("Fixed-state reference: Vbg="
+                      f"{reference['measured_Vbg_V']} V, "
+                      f"Vj={reference['measured_Vj_V']} V; "
+                      "the same DC offset is applied at every Vbg.")
+        messagebox.showinfo("Calibration imported", f"Saved {output}")
+
+    def _sync_jg_calibration_controls(self) -> None:
+        state = "normal" if self.jg_correction_var.get() else "disabled"
+        self.ss_low_entry.config(state=state)
+        self.ss_high_entry.config(state=state)
+
+    def _open_plot_studio(self) -> None:
+        calibration = None
+        ss_window_nA = None
+        if self.jg_correction_var.get():
+            if not self.calibration_path:
+                messagebox.showerror("Calibration required",
+                                     "Select a JG calibration JSON first.")
+                return
+            try:
+                calibration = JgCalibration.from_json(self.calibration_path)
+                ss_window_nA = (float(self.ss_low_var.get()),
+                                float(self.ss_high_var.get()))
+            except (OSError, ValueError) as exc:
+                messagebox.showerror("Calibration error", str(exc))
+                return
+        PlotStudio(self, self.folder, jg_calibration=calibration,
+                   ss_window_nA=ss_window_nA)
 
     def _build_condition_rows(self, esns: list[str]) -> None:
         for w in self.cond_frame.winfo_children():
@@ -194,20 +323,64 @@ class SensorLabApp(tk.Tk):
         self.cache.update({esn: v.get().strip() for esn, v in self.cond_vars.items()})
         self.cache.save()
         self._log(f"Saved conditions -> {self.cache.path}")
+        calibration = None
+        ss_window_nA = None
+        if self.jg_correction_var.get():
+            if not self.calibration_path:
+                messagebox.showerror("Calibration required",
+                                     "Select a JG calibration JSON before enabling correction.")
+                return
+            try:
+                calibration = JgCalibration.from_json(self.calibration_path)
+            except Exception as exc:
+                messagebox.showerror("Calibration error", str(exc))
+                return
+            try:
+                low = float(self.ss_low_var.get())
+                high = float(self.ss_high_var.get())
+                if not 0 < low < high < PROTO.jg.vth_target_nA:
+                    raise ValueError
+                ss_window_nA = (low, high)
+            except ValueError:
+                messagebox.showerror("Invalid SS window",
+                                     "Choose 0 < lower < upper < 150 nA.")
+                return
         self.run_btn.config(state="disabled")
         # Tk variables must only be read on the UI thread.  Snapshot all input
         # before handing the CPU-heavy analysis to the worker.
         folder = self.folder
         make_plots = self.plots_var.get()
         day = self.day_var.get().strip()
-        threading.Thread(target=self._worker, args=(folder, make_plots, day), daemon=True).start()
+        if self.batch_parent:
+            threading.Thread(target=self._batch_worker,
+                             args=(self.batch_parent, make_plots, calibration,
+                                   ss_window_nA), daemon=True).start()
+        else:
+            threading.Thread(target=self._worker,
+                             args=(folder, make_plots, day, calibration,
+                                   ss_window_nA), daemon=True).start()
 
-    def _worker(self, folder: str, make_plots: bool, day: str) -> None:
+    def _worker(self, folder: str, make_plots: bool, day: str,
+                calibration: JgCalibration | None,
+                ss_window_nA: tuple[float, float] | None) -> None:
         try:
             written = analyze_folder(folder, conditions=self.cache,
                                      make_plots=make_plots, day=day,
-                                     log=self._queue.put)
+                                     log=self._queue.put, jg_calibration=calibration,
+                                     ss_window_nA=ss_window_nA)
             self._queue.put("__DONE__:" + ", ".join(written))
+        except Exception as exc:
+            self._queue.put("__ERROR__:" + str(exc))
+
+    def _batch_worker(self, parent: str, make_plots: bool,
+                      calibration: JgCalibration | None,
+                      ss_window_nA: tuple[float, float] | None) -> None:
+        try:
+            completed = analyze_all_timepoints(
+                parent, conditions=self.cache, make_plots=make_plots,
+                jg_calibration=calibration, ss_window_nA=ss_window_nA,
+                overwrite=True, log=self._queue.put)
+            self._queue.put(f"__DONE__:{len(completed)} timepoints")
         except Exception as exc:
             self._queue.put("__ERROR__:" + str(exc))
 
@@ -330,12 +503,17 @@ class DegradationWindow(tk.Toplevel):
         f_steps.pack(fill="x", pady=(0, 10))
         ppm_row = ttk.Frame(f_steps)
         ppm_row.pack(fill="x")
-        ttk.Label(ppm_row, text="Show ppm:").pack(side="left")
+        ttk.Label(ppm_row, text="Use/show ppm:").pack(side="left")
         self.ppm_vars: dict[int, tk.BooleanVar] = {}
         for ppm in (0, 10, 25, 50, 100, 1000):
             v = tk.BooleanVar(value=True)
             self.ppm_vars[ppm] = v
             ttk.Checkbutton(ppm_row, text=str(ppm), variable=v).pack(side="left", padx=2)
+        ttk.Label(
+            ppm_row,
+            text="(selected positive ppm are used for the sensitivity fit)",
+            style="Muted.TLabel",
+        ).pack(side="left", padx=(10, 0))
 
         bounds_row = ttk.Frame(f_steps)
         bounds_row.pack(fill="x", pady=(6, 0))
@@ -395,6 +573,9 @@ class DegradationWindow(tk.Toplevel):
         self.run_btn = ttk.Button(bar, text="▶  Run degradation", style="Accent.TButton",
                                   command=self._run, state="disabled")
         self.run_btn.pack(side="left", padx=10)
+        self.jmp_btn = ttk.Button(bar, text="Export data for JMP…",
+                                  command=self._open_jmp_export, state="disabled")
+        self.jmp_btn.pack(side="left", padx=6)
 
         f3 = ttk.LabelFrame(body, text="  Log  ", padding=6)
         f3.pack(fill="both", expand=True)
@@ -435,7 +616,8 @@ class DegradationWindow(tk.Toplevel):
                 "No masters",
                 f"No analysis masters found under:\n{folder}\n\n"
                 "Expected <condition>/<MODE>/master_<MODE>.xlsx inside an "
-                "'analysis' subfolder (or directly under the selected folder).\n"
+                "active versioned analysis folder, an 'analysis' subfolder, "
+                "or directly under the selected folder.\n"
                 "Pick the experiment folder itself (not its parent), run Analyze "
                 "on it first if needed, and if it is on OneDrive make sure the "
                 "'analysis' subfolder is fully synced.")
@@ -455,6 +637,7 @@ class DegradationWindow(tk.Toplevel):
         self.rows.append({"folder": folder, "day": day_var})
         self._auto_baseline()
         self.run_btn.config(state="normal")
+        self.jmp_btn.config(state="normal")
         if not self.dev_vars:
             self._populate_devices(folder)
 
@@ -469,6 +652,24 @@ class DegradationWindow(tk.Toplevel):
         self._update_excl_btn()
         self.baseline.set(0)
         self.run_btn.config(state="disabled")
+        self.jmp_btn.config(state="disabled")
+
+    def _open_jmp_export(self) -> None:
+        timepoints = [(row["day"].get().strip(), row["folder"]) for row in self.rows]
+        if len(timepoints) < 2:
+            messagebox.showerror("JMP export", "Add a baseline and at least one later timepoint.",
+                                 parent=self)
+            return
+        selected = {key for key, var in self.dev_vars.items() if var.get()}
+        if self.dev_vars and not selected:
+            messagebox.showerror("JMP export", "Select at least one device.", parent=self)
+            return
+        JmpExportWindow(
+            self, timepoints=timepoints,
+            baseline_day=timepoints[self.baseline.get()][0],
+            include_devices=selected if self.dev_vars else None,
+            exclude_cond_days=set(self.excl_cond_days),
+        )
 
     def _auto_baseline(self) -> None:
         """Point the baseline radio at the EARLIEST day — not at whichever
@@ -595,8 +796,9 @@ class DegradationWindow(tk.Toplevel):
             except ValueError:
                 return None
         sel_ppm = {p for p, v in self.ppm_vars.items() if v.get()}
-        # all ticked (or none ticked) = full staircase -> no cut
-        steps_ppm = None if (not sel_ppm or sel_ppm == set(self.ppm_vars)) else sel_ppm
+        # ``None`` means every box is selected.  Keep an empty set distinct so
+        # unticking every box cannot silently revert to using every ppm value.
+        steps_ppm = None if sel_ppm == set(self.ppm_vars) else sel_ppm
         xmin, xmax = _num(self.xmin_var.get()), _num(self.xmax_var.get())
         ymin, ymax = _num(self.ymin_var.get()), _num(self.ymax_var.get())
         jg_xmin, jg_xmax = _num(self.jg_xmin_var.get()), _num(self.jg_xmax_var.get())
@@ -611,7 +813,7 @@ class DegradationWindow(tk.Toplevel):
 
         self.run_btn.config(state="disabled")
         self._log(f"Baseline='{baseline_day}'  devices={len(selected)}/{len(self.dev_vars)}  out={out}"
-                  + (f"  STEPS ppm={sorted(steps_ppm)}" if steps_ppm else "")
+                  + (f"  STEPS ppm={sorted(steps_ppm)}" if steps_ppm is not None else "")
                   + (f"  STEPS Time={sensing_xlim}" if sensing_xlim else "")
                   + (f"  STEPS Ids={sensing_ylim}" if sensing_ylim else "")
                   + (f"  JG VJG={jg_sweep_xlim}" if jg_sweep_xlim else "")
@@ -657,6 +859,203 @@ class DegradationWindow(tk.Toplevel):
         self.log.insert("end", text + "\n")
         self.log.see("end")
         self.log.config(state="disabled")
+
+
+class JmpExportWindow(tk.Toplevel):
+    """Choose per-device metrics and export a stacked JMP workbook."""
+
+    def __init__(self, master: tk.Misc, *, timepoints: list[tuple[str, str]],
+                 baseline_day: str, include_devices: set[tuple[str, str]] | None,
+                 exclude_cond_days: set[tuple[str, str]]) -> None:
+        super().__init__(master)
+        self.title("sensorlab — JMP data export")
+        self.geometry("790x700")
+        self.configure(bg=BG)
+        self.source: ExportSource | None = None
+        self._events: queue.Queue[tuple[str, object]] = queue.Queue()
+        self.metric_vars: dict[MetricOption, tk.BooleanVar] = {}
+        self.stacking_var = tk.StringVar(value="day")
+        self.search_var = tk.StringVar()
+        self.count_var = tk.StringVar(value="Reading analyzed timepoints…")
+        _header(self, "Export data for JMP",
+                "Select metrics; each row is one transistor at one checkpoint")
+        body = ttk.Frame(self, padding=12)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text=f"{len(timepoints)} timepoints · baseline {baseline_day} · "
+                  f"{len(include_devices) if include_devices is not None else 'all'} selected devices",
+                  style="Muted.TLabel").pack(anchor="w", pady=(0, 8))
+
+        search_row = ttk.Frame(body)
+        search_row.pack(fill="x")
+        ttk.Label(search_row, text="Find metric:").pack(side="left")
+        ttk.Entry(search_row, textvariable=self.search_var).pack(
+            side="left", fill="x", expand=True, padx=(6, 0))
+        self.search_var.trace_add("write", lambda *_: self._show_metrics())
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x", pady=(7, 5))
+        ttk.Button(buttons, text="Select shown", command=lambda: self._set_shown(True)).pack(side="left")
+        ttk.Button(buttons, text="Clear shown", command=lambda: self._set_shown(False)).pack(
+            side="left", padx=(6, 0))
+        ttk.Label(buttons, textvariable=self.count_var, style="Muted.TLabel").pack(
+            side="left", padx=(15, 0))
+
+        list_host = ttk.Frame(body)
+        list_host.pack(fill="both", expand=True)
+        self.metric_canvas = tk.Canvas(list_host, bg=BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(list_host, orient="vertical",
+                                  command=self.metric_canvas.yview)
+        self.metric_canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self.metric_canvas.pack(side="left", fill="both", expand=True)
+        self.metric_frame = ttk.Frame(self.metric_canvas)
+        window_id = self.metric_canvas.create_window((0, 0), window=self.metric_frame,
+                                                      anchor="nw")
+        self.metric_frame.bind("<Configure>", lambda _e: self.metric_canvas.configure(
+            scrollregion=self.metric_canvas.bbox("all")))
+        self.metric_canvas.bind("<Configure>", lambda e: self.metric_canvas.itemconfigure(
+            window_id, width=e.width))
+
+        order = ttk.LabelFrame(body, text="  Row stacking  ", padding=8)
+        order.pack(fill="x", pady=(10, 8))
+        ttk.Radiobutton(order, text="By day: all devices at 0D, then 2D, …",
+                        variable=self.stacking_var, value="day").pack(anchor="w")
+        ttk.Radiobutton(order, text="By device: all days for one transistor, then the next",
+                        variable=self.stacking_var, value="device").pack(anchor="w")
+        ttk.Label(body, text="Each selected metric exports its raw value and 0D retention. "
+                  "Vbg and measurement state are encoded in column names.",
+                  style="Muted.TLabel", wraplength=740).pack(anchor="w", pady=(0, 8))
+        self.export_button = ttk.Button(body, text="Export Excel + CSV…",
+                                        style="Accent.TButton", command=self._export,
+                                        state="disabled")
+        self.export_button.pack(anchor="e")
+        self.after(100, self._drain_events)
+
+        def load() -> None:
+            try:
+                source = load_export_source(
+                    timepoints, baseline_day=baseline_day,
+                    include_devices=include_devices,
+                    exclude_cond_days=exclude_cond_days)
+            except Exception as exc:
+                self._events.put(("load_error", str(exc)))
+            else:
+                self._events.put(("loaded", source))
+
+        threading.Thread(target=load, daemon=True).start()
+
+    def _drain_events(self) -> None:
+        try:
+            while True:
+                kind, payload = self._events.get_nowait()
+                if kind == "load_error":
+                    self._load_error(str(payload))
+                elif kind == "loaded":
+                    self._loaded(payload)
+                elif kind == "export_error":
+                    self._export_error(str(payload))
+                elif kind == "export_done":
+                    files, rows = payload
+                    self._export_done(files, rows)
+        except queue.Empty:
+            pass
+        if self.winfo_exists():
+            self.after(100, self._drain_events)
+
+    def _load_error(self, error: str) -> None:
+        if self.winfo_exists():
+            self.count_var.set("Could not read metrics")
+            messagebox.showerror("JMP export", error, parent=self)
+
+    def _loaded(self, source: ExportSource) -> None:
+        if not self.winfo_exists():
+            return
+        self.source = source
+        self.metric_vars = {option: tk.BooleanVar(value=False) for option in source.options}
+        for var in self.metric_vars.values():
+            var.trace_add("write", lambda *_: self._update_count())
+        self._show_metrics()
+        self.export_button.config(state="normal")
+
+    def _visible_options(self) -> list[MetricOption]:
+        query = self.search_var.get().strip().casefold()
+        return [option for option in self.metric_vars
+                if query in option.label.casefold()]
+
+    def _show_metrics(self) -> None:
+        for widget in self.metric_frame.winfo_children():
+            widget.destroy()
+        for option in self._visible_options():
+            checkbox = ttk.Checkbutton(self.metric_frame, text=option.label,
+                                       variable=self.metric_vars[option])
+            checkbox.pack(anchor="w", padx=5, pady=1)
+            checkbox.bind("<MouseWheel>", lambda event: self.metric_canvas.yview_scroll(
+                int(-event.delta / 120), "units"))
+        self.metric_canvas.yview_moveto(0)
+        self._update_count()
+
+    def _set_shown(self, value: bool) -> None:
+        for option in self._visible_options():
+            self.metric_vars[option].set(value)
+        self._update_count()
+
+    def _update_count(self) -> None:
+        if self.source is not None:
+            count = sum(var.get() for var in self.metric_vars.values())
+            self.count_var.set(f"{count} of {len(self.metric_vars)} metrics selected")
+
+    def _export(self) -> None:
+        if self.source is None:
+            return
+        selected = [option for option, var in self.metric_vars.items() if var.get()]
+        if not selected:
+            messagebox.showerror("JMP export", "Select at least one metric.", parent=self)
+            return
+        desktop = Path.home() / "Desktop"
+        destination = filedialog.asksaveasfilename(
+            parent=self, title="Save JMP workbook", initialdir=str(desktop),
+            initialfile="SensorLab_JMP_data.xlsx", defaultextension=".xlsx",
+            filetypes=[("Excel workbook", "*.xlsx")])
+        if not destination:
+            return
+        target = Path(destination)
+        companions = [target, Path(str(target.with_suffix("")) + "_All_Data.csv"),
+                      Path(str(target.with_suffix("")) + "_PostBaseline.csv"),
+                      Path(str(target.with_suffix("")) + "_QC.txt")]
+        existing = [path.name for path in companions if path.exists()]
+        if existing and not messagebox.askyesno(
+                "Replace export files", "These files already exist:\n"
+                + "\n".join(existing) + "\n\nReplace them?", parent=self):
+            return
+        source = self.source
+        stacking = self.stacking_var.get()
+        self.export_button.config(state="disabled")
+        self.count_var.set("Writing workbook and CSV files…")
+
+        def work() -> None:
+            try:
+                tables = make_export_tables(source, selected, stacking=stacking)
+                files = write_export(target, tables)
+            except Exception as exc:
+                self._events.put(("export_error", str(exc)))
+            else:
+                self._events.put(("export_done", (files, len(tables.all_data))))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _export_error(self, error: str) -> None:
+        if self.winfo_exists():
+            self.export_button.config(state="normal")
+            self._update_count()
+            messagebox.showerror("JMP export failed", error, parent=self)
+
+    def _export_done(self, files: list[Path], rows: int) -> None:
+        if self.winfo_exists():
+            self.export_button.config(state="normal")
+            self._update_count()
+            messagebox.showinfo("JMP export complete",
+                                f"Saved {rows} device-day rows to:\n{files[0]}\n\n"
+                                "The All_Data and PostBaseline CSV files are beside it.",
+                                parent=self)
 
 
 def _sensorlab_project_root() -> Path:
@@ -766,8 +1165,8 @@ class ResultsReportWindow(tk.Toplevel):
             self.outline_var.set(str(outline))
             self.output_var.set(str(outline.with_name("Results outline - SensorLab.docx")))
         for candidate in (
-            reliability_data / "degradation",
-            reliability_data / "cycles" / "degradation",
+            active_degradation_root(reliability_data),
+            active_degradation_root(reliability_data / "cycles"),
         ):
             if candidate.is_dir():
                 self.degradation_roots.append(candidate.resolve())
@@ -930,6 +1329,7 @@ class ResultsReportWindow(tk.Toplevel):
                     assert isinstance(result, ReportBuildResult)
                     self._log_report(f"Report written: {result.output_path}")
                     self._log_report(f"Manifest written: {result.manifest_path}")
+                    self._log_report(f"Final-checkpoint values: {result.endpoint_summary_path}")
                     self._log_report(
                         f"Overview plots regenerated: {len(result.overview_generated)}")
                     self._log_report(
@@ -970,12 +1370,16 @@ class PlotStudio(tk.Toplevel):
     TYPES = ["SE", "STEPS", "JG", "JG_H2", "JGH", "ZOZO"]
     CMAPS = ["Blues", "Greens", "Oranges", "Purples", "Reds", "Greys", "viridis"]
 
-    def __init__(self, master: tk.Tk, folder: str | None = None) -> None:
+    def __init__(self, master: tk.Tk, folder: str | None = None,
+                 jg_calibration: JgCalibration | None = None,
+                 ss_window_nA: tuple[float, float] | None = None) -> None:
         super().__init__(master)
         self.title("sensorlab — plot studio")
         self.geometry("1180x720")
         self.configure(bg=BG)
         self.style_cfg = load_style()
+        self.jg_calibration = jg_calibration
+        self.ss_window_nA = ss_window_nA
         self.channels: list = []
         self.grouped: dict = {}
         self.se_run = self.steps_run = self.jg_run = self.air = self.h2 = self.jgh_run = None
@@ -1610,7 +2014,7 @@ class PlotStudio(tk.Toplevel):
 
     def _load(self, folder: str) -> None:
         try:
-            runs = load_folder(folder)
+            runs = load_folder(folder, jg_calibration=self.jg_calibration)
             self.grouped = group_by_kind(runs)
         except Exception as exc:
             messagebox.showerror("Load error", str(exc), parent=self)
@@ -1726,7 +2130,8 @@ class PlotStudio(tk.Toplevel):
                 chs = [c for c in self.steps_run.channels if c.esn == ch.esn] if s.steps_stack_per_esn else None
                 (render_steps_stack if chs else render_steps)(self.ax, self.steps_run, chs or ch, s, day=day)
             elif t == "JG" and self.jg_run:
-                render_jg(self.ax, self.jg_run, ch, s, day=day)
+                render_jg(self.ax, self.jg_run, ch, s, day=day,
+                          ss_window_nA=self.ss_window_nA)
             elif t == "JG_H2" and self.air and self.h2:
                 self._inset_ax = render_jg_h2(self.ax, self.air, self.h2, ch, s, day=day, rec=self.rec)
             elif t == "JGH" and self.jgh_run:
